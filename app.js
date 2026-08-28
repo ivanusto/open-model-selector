@@ -278,11 +278,72 @@ function evaluateWizard() {
     remaining = remaining.filter(m => !m.engineSupport.includes('Experimental'));
   }
 
-  // Rank remaining
+  // Score and Rank remaining models according to Day 16 empirical weights
   remaining.sort((a, b) => {
-    // Day 16 featured boost + Arena Elo
-    const aScore = a.arenaCodeElo + (a.isDay16Featured ? 50 : 0) + a.jsonDisciplineScore;
-    const bScore = b.arenaCodeElo + (b.isDay16Featured ? 50 : 0) + b.jsonDisciplineScore;
+    let aScore = 0;
+    let bScore = 0;
+
+    // 1. Workload Alignment (Day 16 Question 1)
+    if (ans.workload === 'prefill') {
+      // Prefill: Dense 27B/32B/70B get massive boost (200x faster than decode)
+      aScore += a.speedPrefillScore * 3.5;
+      bScore += b.speedPrefillScore * 3.5;
+      if (a.architecture === 'Dense') aScore += 120;
+      if (b.architecture === 'Dense') bScore += 120;
+    } else if (ans.workload === 'decode') {
+      // Decode: MoE with low active params get massive boost (active param throughput)
+      aScore += a.workloadFit.decode * 60;
+      bScore += b.workloadFit.decode * 60;
+      // High bonus for small active params (Ornith 3B, gpt-oss 14B)
+      aScore += (100 / Math.max(1, a.paramsActive)) * 12;
+      bScore += (100 / Math.max(1, b.paramsActive)) * 12;
+      if (a.architecture === 'MoE') aScore += 150;
+      if (b.architecture === 'MoE') bScore += 150;
+    } else if (ans.workload === 'agent') {
+      // Agent loops: JSON discipline + Low KV cache cost + MoE decode throughput
+      aScore += a.jsonDisciplineScore * 3.0;
+      bScore += b.jsonDisciplineScore * 3.0;
+      // Lower KV cost is significantly better (e.g. Ornith 10.56 KB vs 27B 34.5 KB = 3.3x gap)
+      aScore += Math.max(0, (40 - a.kvPerTokKB)) * 10;
+      bScore += Math.max(0, (40 - b.kvPerTokKB)) * 10;
+      aScore += a.workloadFit.agent * 45;
+      bScore += b.workloadFit.agent * 45;
+      if (a.architecture === 'MoE') aScore += 100;
+      if (b.architecture === 'MoE') bScore += 100;
+    }
+
+    // 2. Hardware Memory Sizing Fit (Day 16 Question 3)
+    // If dedicated on 128GB (GB10 / Mac 128), Ornith BF16 (120GB) is the textbook dedicated match
+    if (hw.vramGB >= 120 && ans.coexist === 'dedicated') {
+      if (a.id === 'ornith-35b-a3b') aScore += 200;
+      if (b.id === 'ornith-35b-a3b') bScore += 200;
+    } else if (hw.vramGB >= 120 && ans.coexist === 'coexist') {
+      // Coexist on 128GB: Ornith Q8 (38G) or gpt-oss (68G) leave huge headroom
+      if (a.id === 'ornith-35b-a3b' || a.id === 'gpt-oss-120b') aScore += 120;
+      if (b.id === 'ornith-35b-a3b' || b.id === 'gpt-oss-120b') bScore += 120;
+    }
+
+    // 3. License Score (Day 16 Question 4: MIT > Apache > Community)
+    if (a.license === 'MIT') aScore += 60;
+    if (b.license === 'MIT') bScore += 60;
+    if (a.license === 'Apache 2.0') aScore += 45;
+    if (b.license === 'Apache 2.0') bScore += 45;
+
+    // 4. Traditional Chinese Grade (Day 16 Question 2)
+    if (ans.tcLang === 'yes') {
+      const tcWeights = { 'S': 80, 'S-': 70, 'A': 60, 'A-': 55, 'B+': 30, 'B': 10 };
+      aScore += (tcWeights[a.tcGrade] || 0);
+      bScore += (tcWeights[b.tcGrade] || 0);
+    }
+
+    // 5. Day 16 empirical featured bonus
+    if (a.isDay16Featured) aScore += 80;
+    if (b.isDay16Featured) bScore += 80;
+
+    // 6. Arena Elo (mild weight, preventing leaderboard bias from overruling Day 16 rules)
+    aScore += (a.arenaCodeElo - 1200) * 0.3;
+    bScore += (b.arenaCodeElo - 1200) * 0.3;
+
     return bScore - aScore;
   });
 
@@ -387,11 +448,93 @@ function renderWizard() {
   const container = document.getElementById('wizard-container');
   if (!container) return;
 
+  const hw = getHardware(state.canirun.selectedHardwareId);
   const { remaining, discarded } = evaluateWizard();
   const ans = state.wizard.answers;
   const currentStep = state.wizard.step;
 
   container.innerHTML = `
+    <!-- Upfront Hardware Configuration Hub (Step 0) -->
+    <div class="bg-gradient-to-r from-slate-900 via-slate-900 to-slate-950 border border-emerald-500/40 rounded-2xl p-5 mb-6 shadow-xl backdrop-blur-md">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+              步驟 0：確認硬體平台 (Hardware Platform)
+            </span>
+            <span class="text-xs text-slate-400">目前生效：<strong class="text-white">${hw.name}</strong></span>
+          </div>
+          <p class="text-xs text-slate-300 mt-1">
+            進入後請先選取您的目標硬體規格。所有模型淘汰規則、顯存佔用、KV Cache 算力與首選推薦皆以此即時運算。
+          </p>
+        </div>
+
+        <button onclick="detectLocalHardware()" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 font-bold text-xs flex items-center gap-1.5 transition shrink-0 self-start md:self-auto">
+          <i data-lucide="cpu" class="w-4 h-4"></i> 自動偵測硬體 (WebGPU)
+        </button>
+      </div>
+
+      <!-- Quick Select Chips & Dropdown -->
+      <div class="pt-4 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+        <!-- Quick Chips -->
+        <div class="flex items-center gap-1.5 flex-wrap text-xs">
+          <span class="text-slate-400 text-xs font-semibold mr-1">常用快捷選取：</span>
+          ${[
+            { id: 'nvidia-gb10', label: 'NVIDIA GB10 (128GB)' },
+            { id: 'mac-128', label: 'Apple M4/M2 (128GB)' },
+            { id: 'rtx-4090-24', label: 'RTX 4090 (24GB)' },
+            { id: 'rtx-5090-32', label: 'RTX 5090 (32GB)' },
+            { id: 'rtx-4070-12', label: 'RTX 4070 (12GB)' },
+            { id: 'mac-64', label: 'Apple Mac (64GB)' }
+          ].map(chip => `
+            <button onclick="setGlobalHardware('${chip.id}')" class="px-2.5 py-1 rounded-lg text-xs font-mono font-medium transition ${
+              hw.id === chip.id
+                ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/20'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700/60'
+            }">
+              ${chip.label}
+            </button>
+          `).join('')}
+        </div>
+
+        <!-- Full Select Dropdown -->
+        <div class="w-full lg:w-72">
+          <select onchange="setGlobalHardware(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none">
+            <optgroup label="AI 超級晶片 / 工作站 (Grace Blackwell & Grace Hopper)">
+              ${window.HARDWARE_PROFILES.filter(h => h.type === 'superchip').map(h => `
+                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
+              `).join('')}
+            </optgroup>
+            <optgroup label="Apple Silicon (統一記憶體)">
+              ${window.HARDWARE_PROFILES.filter(h => h.type === 'apple').map(h => `
+                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name} (${h.vramGB}GB Unified)</option>
+              `).join('')}
+            </optgroup>
+            <optgroup label="NVIDIA 獨立顯卡 (VRAM)">
+              ${window.HARDWARE_PROFILES.filter(h => h.type === 'nvidia').map(h => `
+                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
+              `).join('')}
+            </optgroup>
+            <optgroup label="AMD & Intel 獨立顯卡">
+              ${window.HARDWARE_PROFILES.filter(h => h.type === 'amd' || h.type === 'intel').map(h => `
+                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
+              `).join('')}
+            </optgroup>
+            <optgroup label="企業級加速卡 / 專業卡">
+              ${window.HARDWARE_PROFILES.filter(h => h.type === 'enterprise').map(h => `
+                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
+              `).join('')}
+            </optgroup>
+            <optgroup label="純 CPU + 系統記憶體">
+              ${window.HARDWARE_PROFILES.filter(h => h.type === 'cpu').map(h => `
+                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
+              `).join('')}
+            </optgroup>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <!-- Top Step Progress Bar -->
     <div class="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-6 mb-8 backdrop-blur-md">
       <div class="flex items-center justify-between mb-4">
@@ -1068,6 +1211,14 @@ function renderCanIRunModelCard(model, hw, ctx, reserveGB) {
       </div>
     </div>
   `;
+}
+
+function setGlobalHardware(hwId) {
+  state.canirun.selectedHardwareId = hwId;
+  const hw = getHardware(hwId);
+  renderWizard();
+  if (state.activeTab === 'canirun') renderCanIRun();
+  showToast(`已切換目標硬體為：${hw.name}`);
 }
 
 function setCanIRunHardware(hwId) {

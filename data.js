@@ -213,7 +213,7 @@ const MODELS_DATABASE = [
   },
   {
     id: 'ornith-35b-a3b',
-    name: 'Ornith-35B-A3B (MoE 35B / Active 3B)',
+    name: 'Ornith 1.5 35B-A3B (MoE 35B / Active 3B)',
     family: 'Ornith',
     paramsTotal: 35.0,
     paramsActive: 3.0,
@@ -243,9 +243,9 @@ const MODELS_DATABASE = [
     storageAdvise: 'BF16 峰值佔用 120.7 GB，128GB 機器可作獨佔主力；Q8 檔 38GB 可作共存型。',
     examScore: '44/50 (Agent 推薦)',
     isDay16Featured: true,
-    day16Role: 'Day 16 獨佔/共存雙棲：KV 成本超低 10.56 KB，MIT 最寬鬆授權',
+    day16Role: 'Day 16 獨佔/共存雙棲：KV 成本超低 10.56 KB，MIT 最寬鬆授權，128GB 機器最佳適配',
     quantProfiles: {
-      'BF16': { sizeGB: 70.0, bpw: 16.0, recSpeedGpu: '128GB 機器全開 (120.7GB 峰值)' },
+      'BF16': { sizeGB: 70.0, bpw: 16.0, recSpeedGpu: '128GB 機器全開 (120.7GB 峰值滿載)' },
       'Q8_0': { sizeGB: 38.0, bpw: 8.5, recSpeedGpu: '29.9 t/s (實測速度)' },
       'Q5_K_M': { sizeGB: 25.2, bpw: 5.5, recSpeedGpu: '38~45 t/s (單卡 24G 剛好容納)' },
       'Q4_K_M': { sizeGB: 21.0, bpw: 4.5, recSpeedGpu: '42~50 t/s' }
