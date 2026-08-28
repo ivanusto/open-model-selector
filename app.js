@@ -52,7 +52,7 @@ const state = {
 
   // Radar State
   radar: {
-    selectedModelIds: ['qwen25-coder-32b', 'ornith-35b-a3b', 'gpt-oss-120b', 'deepseek-r1-moe'],
+    selectedModelIds: ['ornith-35b-a3b', 'qwen38-27b-dense', 'deepseek-v4-flash', 'muse-glimmer-30b'],
     chartInstance: null
   }
 };
