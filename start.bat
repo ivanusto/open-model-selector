@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-echo 正在啟動 OpenModel Forge AI 模型選型互動網頁...
+echo 正在啟動 OpenModel Selector (AI 開放模型選擇決策與硬體搭配矩陣)...
 cd /d "%~dp0"
 python serve.py
 if %ERRORLEVEL% NEQ 0 (

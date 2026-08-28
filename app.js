@@ -1,5 +1,5 @@
 /**
- * OpenModel Forge - Application Logic
+ * OpenModel Selector - Application Logic
  */
 
 // Application State

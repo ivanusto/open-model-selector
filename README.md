@@ -1,4 +1,4 @@
-# OpenModel Forge ｜ AI 開放模型決策與硬體適配矩陣
+# OpenModel Selector ｜ AI 開放模型選擇決策與硬體搭配矩陣
 
 > **基於 iThome 鐵人賽《[Day 16｜模型選型方法論：五個問題，比排行榜有用](https://ithelp.ithome.com.tw/articles/10405704/)》實測結論，結合 [Arena.ai Coding Leaderboard](https://arena.ai/leaderboard/code) 天梯數據與 [CanIRun.ai](https://www.canirun.ai/) 算力顯存精算模型打造的互動式選型工具。**
 

@@ -16,9 +16,9 @@ def run():
     with socketserver.TCPServer(("", PORT), Handler) as httpd:
         url = f"http://localhost:{PORT}"
         print("=" * 60)
-        print(f"🚀 OpenModel Forge 本地服務已啟動！")
-        print(f"📍 網址：{url}")
-        print(f"💡 請在瀏覽器中操作。按 Ctrl+C 可停止伺服器。")
+        print(f"OpenModel Selector 本地服務已啟動！")
+        print(f"網址：{url}")
+        print(f"請在瀏覽器中操作。按 Ctrl+C 可停止伺服器。")
         print("=" * 60)
         webbrowser.open(url)
         try:
