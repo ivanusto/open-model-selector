@@ -428,7 +428,7 @@ const MODELS_DATABASE = [
     commercialAllowed: false,
     contextWindow: 32768,
     nativeContext: 32768,
-    arenaCodeElo: 1256,
+    arenaCodeElo: 1230,
     humanEval: 86.8,
     sweBench: 34.0,
     tcGrade: 'B-',

@@ -1,0 +1,49 @@
+name: Weekly Leaderboard & Model Sync
+
+on:
+  schedule:
+    # Runs every Monday at 00:00 UTC (08:00 AM Taiwan Time)
+    - cron: '0 0 * * 1'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-leaderboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run Leaderboard Sync Script
+        run: |
+          python scripts/sync_leaderboard.py
+
+      - name: Verify data.js Syntax
+        run: |
+          node -c data.js
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data.js
+          if git diff --staged --quiet; then
+            echo "No changes detected. data.js is already up-to-date."
+          else
+            git commit -m "chore(data): weekly sync Arena Coding Leaderboard Elo ratings [skip ci]"
+            git push origin main
+          fi

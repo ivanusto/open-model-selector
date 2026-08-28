@@ -37,6 +37,9 @@
 - 視覺化雷達圖直觀比對多模型綜合表現。
 - 深度整合 [llm-zhtw-agent-exam](https://github.com/ivanusto/llm-zhtw-agent-exam) 繁中 Agent 考卷標準。
 
+### 6. 每週自動化同步（GitHub Actions 定期巡檢）
+- 內建 `sync_leaderboard.py` 與每週一 GitHub Actions 自動工作流程，定期同步更新 LMSYS Arena 最新 Coding 天梯評分。
+
 ---
 
 ## 快速啟動方式
