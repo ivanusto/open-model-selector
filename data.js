@@ -533,6 +533,86 @@ const MODELS_DATABASE = [
       'Q8_0': { sizeGB: 9.5, bpw: 8.5, recSpeedGpu: '12GB VRAM 暢跑' },
       'Q4_K_M': { sizeGB: 5.5, bpw: 4.5, recSpeedGpu: '8GB 顯卡輕鬆跑' }
     }
+  },
+  {
+    id: 'deepseek-v4-flash',
+    name: 'DeepSeek-V4-Flash (MoE 24B / Active 3.2B MLA)',
+    family: 'DeepSeek',
+    paramsTotal: 24.0,
+    paramsActive: 3.2,
+    architecture: 'MoE',
+    license: 'MIT',
+    commercialAllowed: true,
+    contextWindow: 131072,
+    nativeContext: 65536,
+    arenaCodeElo: 1318,
+    humanEval: 91.2,
+    sweBench: 42.0,
+    tcGrade: 'S-',
+    tcQuantMinBit: 'Q4_K_M / Q8 起步 (MLA 極致省顯存)',
+    tcQuantNote: '結合次世代 MLA 多頭潛在注意力機制與輕量 MoE 路由，解碼速度突破 70+ t/s，KV 快取僅 3.2 KB/tok！',
+    jsonDisciplineScore: 92,
+    jsonNote: '輸出遵循度極高，支援標準 Tool Calling 協定與結構化輸出。',
+    kvPerTokKB: 3.2,
+    speedPrefillScore: 90,
+    speedDecodeRating: '極高速 (MLA + MoE 3.2B 啟用, 70+ t/s)',
+    workloadFit: {
+      prefill: 4.5,
+      decode: 5.0,
+      agent: 5.0
+    },
+    engineSupport: 'Production Merged',
+    engineNotes: 'llama.cpp 與 vLLM 主線已全面支援 MLA 與 DeepSeek-V4 架構。',
+    storageAdvise: '輕量主力！Q4 檔僅 14.5GB，單卡 16G (如 RTX 5060 Ti) 即可滿載暢跑！',
+    examScore: '47/50 (Agent 頂級推薦)',
+    isDay16Featured: true,
+    day16Role: '次世代輕量 MoE 代表：極致 MLA 快取省顯存，高吞吐 Agent 迴圈首選',
+    quantProfiles: {
+      'BF16': { sizeGB: 48.0, bpw: 16.0, recSpeedGpu: '64GB Mac / RTX 5090 (45 t/s)' },
+      'Q8_0': { sizeGB: 25.5, bpw: 8.5, recSpeedGpu: '單卡 24G / Mac 36G (60 t/s)' },
+      'Q5_K_M': { sizeGB: 17.2, bpw: 5.5, recSpeedGpu: 'RTX 4080 / 5080 (70+ t/s)' },
+      'Q4_K_M': { sizeGB: 14.5, bpw: 4.5, recSpeedGpu: 'RTX 5060 Ti 16G 完美暢跑 (75 t/s)' }
+    }
+  },
+  {
+    id: 'muse-glimmer-30b',
+    name: 'Muse-Glimmer-30B-Instruct (Dense 30B)',
+    family: 'Muse',
+    paramsTotal: 30.0,
+    paramsActive: 30.0,
+    architecture: 'Dense',
+    license: 'Apache 2.0',
+    commercialAllowed: true,
+    contextWindow: 65536,
+    nativeContext: 32768,
+    arenaCodeElo: 1266,
+    humanEval: 85.6,
+    sweBench: 34.2,
+    tcGrade: 'A',
+    tcQuantMinBit: '8-bit 起步 (低位元認明 imatrix)',
+    tcQuantNote: '密集架構 30B 級距，Prefill 吞吐強大；繁中長文本理解出色，建議以 8-bit 或 Q5_K_M 運行。',
+    jsonDisciplineScore: 86,
+    jsonNote: 'JSON 格式紀律良好，長上下文語意邊界清晰。',
+    kvPerTokKB: 18.0,
+    speedPrefillScore: 92,
+    speedDecodeRating: '中高速 (Dense 30B, 22~32 t/s)',
+    workloadFit: {
+      prefill: 4.8,
+      decode: 3.8,
+      agent: 4.4
+    },
+    engineSupport: 'Production Merged',
+    engineNotes: '標準 Transformer 架構，全引擎零門檻支援。',
+    storageAdvise: 'Q4 檔約 17.5GB，本機 NVMe SSD 秒開。',
+    examScore: '44/50',
+    isDay16Featured: false,
+    day16Role: '密集 30B 級距新星：長輸入 Prefill 吞吐強，通用代碼理解扎實',
+    quantProfiles: {
+      'BF16': { sizeGB: 60.0, bpw: 16.0, recSpeedGpu: '64GB Mac / 雙卡 48G' },
+      'Q8_0': { sizeGB: 32.0, bpw: 8.5, recSpeedGpu: 'RTX 5090 32G / Mac 48G' },
+      'Q5_K_M': { sizeGB: 21.0, bpw: 5.5, recSpeedGpu: 'RTX 4090 24G 完美暢跑 (28 t/s)' },
+      'Q4_K_M': { sizeGB: 17.5, bpw: 4.5, recSpeedGpu: 'RTX 4080 / 5080 16G (32 t/s)' }
+    }
   }
 ];
 
