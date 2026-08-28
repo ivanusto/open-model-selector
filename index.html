@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenModel Forge ｜ AI 開放模型決策與硬體適配矩陣</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#ecfdf5',
+              400: '#34d399',
+              500: '#10b981',
+              600: '#059669',
+              900: '#064e3b',
+              950: '#022c22'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
+
+  <!-- Top Navigation Header -->
+  <header class="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        
+        <!-- Logo & Title -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 via-teal-400 to-indigo-500 p-0.5 shadow-lg shadow-emerald-950/50 flex items-center justify-center">
+            <div class="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+              <i data-lucide="cpu" class="w-5 h-5 text-emerald-400"></i>
+            </div>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="font-black text-base sm:text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-emerald-400 bg-clip-text text-transparent">
+                OpenModel Forge
+              </span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">v1.0</span>
+            </div>
+            <p class="text-[11px] text-slate-400 hidden sm:block">Day 16 模型選型方法論 × Arena Coding 天梯榜 × CanIRun 硬體試算</p>
+          </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <nav class="hidden md:flex items-center gap-1.5">
+          <button onclick="setTab('wizard')" data-tab="wizard" class="nav-tab-btn px-4 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-lg shadow-emerald-950/40 flex items-center gap-2">
+            <i data-lucide="git-branch" class="w-4 h-4"></i> 5問選型決策
+          </button>
+          <button onclick="setTab('canirun')" data-tab="canirun" class="nav-tab-btn px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent flex items-center gap-2">
+            <i data-lucide="activity" class="w-4 h-4"></i> 能跑嗎？(CanIRun)
+          </button>
+          <button onclick="setTab('leaderboard')" data-tab="leaderboard" class="nav-tab-btn px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent flex items-center gap-2">
+            <i data-lucide="trophy" class="w-4 h-4"></i> Coding 天梯榜
+          </button>
+          <button onclick="setTab('storage')" data-tab="storage" class="nav-tab-btn px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent flex items-center gap-2">
+            <i data-lucide="hard-drive" class="w-4 h-4"></i> SSD/NAS 決策
+          </button>
+          <button onclick="setTab('radar')" data-tab="radar" class="nav-tab-btn px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent flex items-center gap-2">
+            <i data-lucide="radar" class="w-4 h-4"></i> 評比雷達
+          </button>
+          <button onclick="setTab('day16')" data-tab="day16" class="nav-tab-btn px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent flex items-center gap-2">
+            <i data-lucide="book-open" class="w-4 h-4"></i> Day 16 筆記
+          </button>
+        </nav>
+
+        <!-- GitHub / External Links -->
+        <div class="flex items-center gap-2.5">
+          <a href="https://ithelp.ithome.com.tw/articles/10405704/" target="_blank" class="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-emerald-400 hover:border-slate-700 text-xs font-semibold transition" title="閱讀 Day 16 iThome 原文專欄">
+            <i data-lucide="newspaper" class="w-3.5 h-3.5 text-emerald-400"></i> Day 16 iThome 文章
+          </a>
+          <a href="https://github.com/ivanusto/llm-zhtw-agent-exam" target="_blank" class="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:border-slate-700 transition" title="前往繁中 Agent 考卷 (llm-zhtw-agent-exam)">
+            <i data-lucide="github" class="w-4 h-4"></i>
+          </a>
+        </div>
+      </div>
+
+      <!-- Mobile Tab Bar -->
+      <div class="flex md:hidden overflow-x-auto py-2 gap-1 border-t border-slate-800/60">
+        <button onclick="setTab('wizard')" data-tab="wizard" class="nav-tab-btn px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap bg-emerald-500/20 text-emerald-400">5問選型</button>
+        <button onclick="setTab('canirun')" data-tab="canirun" class="nav-tab-btn px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap text-slate-400">能跑嗎？</button>
+        <button onclick="setTab('leaderboard')" data-tab="leaderboard" class="nav-tab-btn px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap text-slate-400">天梯榜</button>
+        <button onclick="setTab('storage')" data-tab="storage" class="nav-tab-btn px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap text-slate-400">SSD/NAS</button>
+        <button onclick="setTab('radar')" data-tab="radar" class="nav-tab-btn px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap text-slate-400">評比雷達</button>
+        <button onclick="setTab('day16')" data-tab="day16" class="nav-tab-btn px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap text-slate-400">Day 16 筆記</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Area -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    
+    <!-- Tab 1: Wizard -->
+    <section id="tab-content-wizard" class="tab-content-panel">
+      <div id="wizard-container"></div>
+    </section>
+
+    <!-- Tab 2: CanIRun Hardware Simulator -->
+    <section id="tab-content-canirun" class="tab-content-panel hidden">
+      <div id="canirun-container"></div>
+    </section>
+
+    <!-- Tab 3: Arena.ai Coding Leaderboard -->
+    <section id="tab-content-leaderboard" class="tab-content-panel hidden">
+      <div id="leaderboard-container"></div>
+    </section>
+
+    <!-- Tab 4: Storage Advisor (SSD vs NAS) -->
+    <section id="tab-content-storage" class="tab-content-panel hidden">
+      <div id="storage-container"></div>
+    </section>
+
+    <!-- Tab 5: Radar & Exam Benchmark -->
+    <section id="tab-content-radar" class="tab-content-panel hidden">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        
+        <!-- Radar Chart Container (8 cols) -->
+        <div class="lg:col-span-8 bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-xl backdrop-blur-md">
+          <div class="flex items-center justify-between pb-4 mb-4 border-b border-slate-800">
+            <div>
+              <span class="text-xs font-mono font-semibold text-emerald-400 uppercase tracking-wider">Multi-Metric Radar</span>
+              <h2 class="text-xl font-bold text-white mt-0.5">模型七維能力綜合雷達評比</h2>
+            </div>
+            <span class="text-xs text-slate-400">支援同時勾選 1~4 顆模型</span>
+          </div>
+
+          <div class="h-[440px] w-full relative">
+            <canvas id="radar-chart-canvas"></canvas>
+          </div>
+        </div>
+
+        <!-- Radar Selector & Exam Box (4 cols) -->
+        <div class="lg:col-span-4 space-y-6">
+          <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
+            <h3 class="text-sm font-bold text-white mb-2 flex items-center gap-1.5">
+              <i data-lucide="layers" class="w-4 h-4 text-emerald-400"></i> 選擇欲比對的模型：
+            </h3>
+            <div class="space-y-2 max-h-72 overflow-y-auto pr-1" id="radar-model-toggles"></div>
+          </div>
+
+          <!-- Exam Reference Card -->
+          <div class="bg-gradient-to-br from-indigo-950/60 to-slate-900 border border-indigo-500/40 rounded-2xl p-5 shadow-xl">
+            <span class="text-xs font-mono text-indigo-300 font-bold">考卷檢驗標準</span>
+            <h4 class="text-base font-bold text-white mt-1 mb-2">llm-zhtw-agent-exam</h4>
+            <p class="text-xs text-slate-300 leading-relaxed mb-4">
+              以 50 題自動化考卷量化「繁體中文理解」、「量化抗損力」、「JSON 輸出禮儀」與「Tool Calling 迴圈精確度」。
+            </p>
+            <a href="https://github.com/ivanusto/llm-zhtw-agent-exam" target="_blank" class="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-950 transition">
+              檢視 GitHub 考卷庫 <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+            </a>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Tab 6: Day 16 Knowledge Base -->
+    <section id="tab-content-day16" class="tab-content-panel hidden">
+      <div id="day16-container"></div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-slate-800/80 bg-slate-950 py-8 text-xs text-slate-500 mt-auto">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div>
+        <p class="font-semibold text-slate-400">OpenModel Forge ｜ AI 開放模型決策與硬體適配矩陣</p>
+        <p class="text-[11px] text-slate-500 mt-0.5">
+          資料來源：Ivan Usto Day 16 選型方法論 ｜ LMSYS Arena.ai Coding Leaderboard ｜ CanIRun.ai 算力模型
+        </p>
+      </div>
+      <div class="flex items-center gap-4 text-slate-400">
+        <a href="https://ithelp.ithome.com.tw/articles/10405704/" target="_blank" class="hover:text-emerald-400 transition flex items-center gap-1">
+          <i data-lucide="newspaper" class="w-3.5 h-3.5"></i> Day 16 iThome 文章
+        </a>
+        <a href="https://github.com/ivanusto/llm-zhtw-agent-exam" target="_blank" class="hover:text-emerald-400 transition flex items-center gap-1">
+          <i data-lucide="github" class="w-3.5 h-3.5"></i> llm-zhtw-agent-exam
+        </a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Toast Notification Box -->
+  <div id="app-toast" class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl bg-slate-900 border border-emerald-500/50 text-emerald-300 text-xs font-semibold shadow-2xl shadow-emerald-950 transition-all duration-300 transform translate-y-4 opacity-0 pointer-events-none flex items-center gap-2">
+    訊息通知
+  </div>
+
+  <!-- Model Detail Modal -->
+  <div id="model-detail-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm hidden">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 shadow-2xl relative" id="model-detail-body">
+      <!-- Injected via JS -->
+    </div>
+  </div>
+
+  <!-- Compare Matrix Modal -->
+  <div id="compare-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm hidden">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto p-6 shadow-2xl relative" id="compare-modal-body">
+      <!-- Injected via JS -->
+    </div>
+  </div>
+
+  <!-- App Data & Scripts -->
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
