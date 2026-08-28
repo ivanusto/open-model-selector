@@ -121,35 +121,58 @@ async function detectLocalHardware() {
 
   // Best match algorithm
   const rendererLow = info.renderer.toLowerCase();
-  if (rendererLow.includes('gb10') || rendererLow.includes('grace blackwell') || rendererLow.includes('dgx spark')) {
+  if (rendererLow.includes('gb200')) {
+    info.matchedId = 'nvidia-gb200';
+  } else if (rendererLow.includes('gb10') || rendererLow.includes('grace blackwell') || rendererLow.includes('dgx spark')) {
     info.matchedId = 'nvidia-gb10';
   } else if (rendererLow.includes('gh200') || rendererLow.includes('grace hopper')) {
     info.matchedId = 'nvidia-gh200';
-  } else if (rendererLow.includes('apple') || rendererLow.includes('m1') || rendererLow.includes('m2') || rendererLow.includes('m3') || rendererLow.includes('m4')) {
-    if (rendererLow.includes('ultra') || rendererLow.includes('128')) info.matchedId = 'mac-128';
+  } else if (rendererLow.includes('apple') || rendererLow.includes('m1') || rendererLow.includes('m2') || rendererLow.includes('m3') || rendererLow.includes('m4') || rendererLow.includes('m5')) {
+    if (rendererLow.includes('512')) info.matchedId = 'mac-512';
+    else if (rendererLow.includes('192')) info.matchedId = 'mac-192';
+    else if (rendererLow.includes('ultra') || rendererLow.includes('128')) info.matchedId = 'mac-128';
+    else if (rendererLow.includes('96')) info.matchedId = 'mac-96';
     else if (rendererLow.includes('max') || rendererLow.includes('64')) info.matchedId = 'mac-64';
     else if (rendererLow.includes('48')) info.matchedId = 'mac-48';
-    else if (rendererLow.includes('36')) info.matchedId = 'mac-36';
+    else if (rendererLow.includes('pro') || rendererLow.includes('36')) info.matchedId = 'mac-36';
     else if (rendererLow.includes('24')) info.matchedId = 'mac-24';
     else info.matchedId = 'mac-16';
   } else if (rendererLow.includes('5090')) {
     info.matchedId = 'rtx-5090-32';
   } else if (rendererLow.includes('5080')) {
     info.matchedId = 'rtx-5080-16';
+  } else if (rendererLow.includes('5070')) {
+    info.matchedId = 'rtx-5070-12';
+  } else if (rendererLow.includes('5060 ti') || rendererLow.includes('5060ti')) {
+    info.matchedId = 'rtx-5060ti-16';
   } else if (rendererLow.includes('4090') || rendererLow.includes('3090')) {
     info.matchedId = 'rtx-4090-24';
   } else if (rendererLow.includes('4080')) {
     info.matchedId = 'rtx-4080-16';
+  } else if (rendererLow.includes('4070 ti') || rendererLow.includes('4070ti')) {
+    info.matchedId = 'rtx-4070tis-16';
   } else if (rendererLow.includes('4070')) {
     info.matchedId = 'rtx-4070-12';
   } else if (rendererLow.includes('4060 ti') || rendererLow.includes('4060ti')) {
     info.matchedId = 'rtx-4060ti-16';
   } else if (rendererLow.includes('4060') || rendererLow.includes('3060')) {
     info.matchedId = 'rtx-3060-12';
-  } else if (rendererLow.includes('7900')) {
+  } else if (rendererLow.includes('7900 xtx') || rendererLow.includes('7900xtx')) {
     info.matchedId = 'amd-rx7900xtx';
+  } else if (rendererLow.includes('7900')) {
+    info.matchedId = 'amd-rx7900xt';
+  } else if (rendererLow.includes('7800')) {
+    info.matchedId = 'amd-rx7800xt';
+  } else if (rendererLow.includes('9070')) {
+    info.matchedId = 'amd-rx9070xt';
+  } else if (rendererLow.includes('b580')) {
+    info.matchedId = 'intel-arc-b580';
   } else if (rendererLow.includes('arc') || rendererLow.includes('a770')) {
     info.matchedId = 'intel-arc-a770';
+  } else if (rendererLow.includes('h100')) {
+    info.matchedId = 'nvidia-h100-80';
+  } else if (rendererLow.includes('a100')) {
+    info.matchedId = 'nvidia-a100-80';
   }
 
   state.canirun.detectedGpu = info;
@@ -481,11 +504,11 @@ function renderWizard() {
           <span class="text-slate-400 text-xs font-semibold mr-1">常用快捷選取：</span>
           ${[
             { id: 'nvidia-gb10', label: 'NVIDIA GB10 (128GB)' },
-            { id: 'mac-128', label: 'Apple M4/M2 (128GB)' },
-            { id: 'rtx-4090-24', label: 'RTX 4090 (24GB)' },
+            { id: 'mac-128', label: 'Apple M5 / M4 (128GB)' },
             { id: 'rtx-5090-32', label: 'RTX 5090 (32GB)' },
-            { id: 'rtx-4070-12', label: 'RTX 4070 (12GB)' },
-            { id: 'mac-64', label: 'Apple Mac (64GB)' }
+            { id: 'rtx-4090-24', label: 'RTX 4090 (24GB)' },
+            { id: 'rtx-5060ti-16', label: 'RTX 5060 Ti (16GB)' },
+            { id: 'mac-64', label: 'Apple M5 Max (64GB)' }
           ].map(chip => `
             <button onclick="setGlobalHardware('${chip.id}')" class="px-2.5 py-1 rounded-lg text-xs font-mono font-medium transition ${
               hw.id === chip.id

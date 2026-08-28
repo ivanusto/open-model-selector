@@ -9,44 +9,53 @@
 const HARDWARE_PROFILES = [
   // AI Superchips & Workstations (Grace Blackwell & Grace Hopper)
   { id: 'nvidia-gb10', name: 'NVIDIA GB10 (Grace Blackwell 128GB Unified)', type: 'superchip', vramGB: 128, unified: true, memBandwidthGBs: 1000, description: 'NVIDIA 最新個人 AI 超級晶片！20核 Grace CPU + Blackwell GPU，128GB 統一記憶體，1 PFLOPS FP4 算力 (DGX Spark 主力)' },
-  { id: 'nvidia-gh200', name: 'NVIDIA GH200 (Grace Hopper 96GB/144GB HBM3)', type: 'superchip', vramGB: 144, unified: true, memBandwidthGBs: 4000, description: '企業級超級晶片，96G/144G 超高速 HBM3 統一記憶體，跑 70B FP16 或 120B MoE 極速首選' },
+  { id: 'nvidia-gb200', name: 'NVIDIA GB200 NVL (192GB Unified Memory)', type: 'superchip', vramGB: 192, unified: true, memBandwidthGBs: 2000, description: '旗艦級 Blackwell 超級運算節點，192GB 高速統一記憶體，支援超大模型全載入' },
+  { id: 'nvidia-gh200', name: 'NVIDIA GH200 (Grace Hopper 144GB HBM3)', type: 'superchip', vramGB: 144, unified: true, memBandwidthGBs: 4000, description: '企業級超級晶片，144G 超高速 HBM3 統一記憶體，跑 70B FP16 或 120B MoE 極速首選' },
 
-  // Apple Silicon Unified Memory
-  { id: 'mac-16', name: 'Apple M4 / M3 (16GB Unified)', type: 'apple', vramGB: 16, unified: true, memBandwidthGBs: 150, description: '入門級統一記憶體，適合 7B~9B Q8 或 14B Q4' },
-  { id: 'mac-24', name: 'Apple M4 / M3 (24GB Unified)', type: 'apple', vramGB: 24, unified: true, memBandwidthGBs: 150, description: '單卡 24G 等級，可跑 27B/32B Q4_K_M' },
-  { id: 'mac-36', name: 'Apple M3/M4 Pro (36GB Unified)', type: 'apple', vramGB: 36, unified: true, memBandwidthGBs: 150, description: '寬裕支援 32B Q8 或 70B Q3/Q4 邊緣' },
-  { id: 'mac-48', name: 'Apple M3/M4 Max (48GB Unified)', type: 'apple', vramGB: 48, unified: true, memBandwidthGBs: 300, description: '中高階工作站，可順暢運行 32B 8-bit 或 70B Q4_K_M' },
-  { id: 'mac-64', name: 'Apple M2/M3/M4 Max (64GB Unified)', type: 'apple', vramGB: 64, unified: true, memBandwidthGBs: 400, description: '70B 密集模型 Q6/Q8 舒適區，MoE 輕量版' },
-  { id: 'mac-96', name: 'Apple M3/M4 Max (96GB Unified)', type: 'apple', vramGB: 96, unified: true, memBandwidthGBs: 400, description: '70B 8-bit + 巨大 KV 快取，或 gpt-oss-120b Q4' },
-  { id: 'mac-128', name: 'Apple M2/M4 Ultra / Max (128GB Unified)', type: 'apple', vramGB: 128, unified: true, memBandwidthGBs: 800, description: 'Day 16 經典測試機型！可跑 Ornith BF16 (120GB) 或 70B FP16' },
-  { id: 'mac-192', name: 'Apple M2 Ultra (192GB Unified)', type: 'apple', vramGB: 192, unified: true, memBandwidthGBs: 800, description: '支援 DeepSeek-V3/R1 Q2/Q3 或全量 120B+ 服務' },
-  { id: 'mac-512', name: 'Apple Mac Studio / Pro (512GB Unified)', type: 'apple', vramGB: 512, unified: true, memBandwidthGBs: 800, description: '極致大記憶體，支援 DeepSeek-V3/R1 671B Q4_K_M (404GB) 本地推論' },
+  // Apple Silicon Unified Memory (M1 ~ M5 系列)
+  { id: 'mac-16', name: 'Apple M5 / M4 (16GB Unified)', type: 'apple', vramGB: 16, unified: true, memBandwidthGBs: 150, description: '入門級統一記憶體，適合 7B~9B Q8 或 14B Q4' },
+  { id: 'mac-24', name: 'Apple M5 / M4 (24GB Unified)', type: 'apple', vramGB: 24, unified: true, memBandwidthGBs: 150, description: '單卡 24G 等級，可跑 27B/32B Q4_K_M' },
+  { id: 'mac-36', name: 'Apple M5 Pro / M4 Pro (36GB Unified)', type: 'apple', vramGB: 36, unified: true, memBandwidthGBs: 150, description: '寬裕支援 32B Q8 或 70B Q3/Q4 邊緣' },
+  { id: 'mac-48', name: 'Apple M5 Max / M4 Max (48GB Unified)', type: 'apple', vramGB: 48, unified: true, memBandwidthGBs: 300, description: '中高階工作站，可順暢運行 32B 8-bit 或 70B Q4_K_M' },
+  { id: 'mac-64', name: 'Apple M5 Max (64GB Unified)', type: 'apple', vramGB: 64, unified: true, memBandwidthGBs: 400, description: '70B 密集模型 Q6/Q8 舒適區，MoE 輕量版' },
+  { id: 'mac-96', name: 'Apple M5 Max (96GB Unified)', type: 'apple', vramGB: 96, unified: true, memBandwidthGBs: 400, description: '70B 8-bit + 巨大 KV 快取，或 gpt-oss-120b Q4' },
+  { id: 'mac-128', name: 'Apple M5 Ultra / M4 Max (128GB Unified)', type: 'apple', vramGB: 128, unified: true, memBandwidthGBs: 800, description: 'Day 16 經典測試機型！可跑 Ornith 1.5 BF16 (120GB) 或 70B FP16' },
+  { id: 'mac-192', name: 'Apple M5 Ultra / M2 Ultra (192GB Unified)', type: 'apple', vramGB: 192, unified: true, memBandwidthGBs: 800, description: '支援 DeepSeek-V3/R1 Q2/Q3 或全量 120B+ 服務' },
+  { id: 'mac-512', name: 'Apple Mac Studio M5 Ultra (512GB Unified)', type: 'apple', vramGB: 512, unified: true, memBandwidthGBs: 800, description: '極致大記憶體，支援 DeepSeek-V3/R1 671B Q4_K_M (404GB) 本地推論' },
 
-  // NVIDIA Consumer & Next-Gen GPUs
-  { id: 'rtx-3060-12', name: 'NVIDIA RTX 3060 (12GB VRAM)', type: 'nvidia', vramGB: 12, unified: false, memBandwidthGBs: 360, description: '平民裝機神器，適合 7B/8B Q8 或 14B Q4' },
-  { id: 'rtx-4060-8', name: 'NVIDIA RTX 4060 (8GB VRAM)', type: 'nvidia', vramGB: 8, unified: false, memBandwidthGBs: 272, description: '入門顯卡，適合 7B Q4_K_M / 3B FP16' },
-  { id: 'rtx-4060ti-16', name: 'NVIDIA RTX 4060 Ti (16GB VRAM)', type: 'nvidia', vramGB: 16, unified: false, memBandwidthGBs: 288, description: '高 CP 值 16G 顯存，可滿載 7B FP16 或 14B Q8 / 32B Q3' },
-  { id: 'rtx-4070-12', name: 'NVIDIA RTX 4070 / Super (12GB VRAM)', type: 'nvidia', vramGB: 12, unified: false, memBandwidthGBs: 504, description: '高頻寬 12G，適合 7B/8B 8-bit 高速推論' },
-  { id: 'rtx-4070tis-16', name: 'NVIDIA RTX 4070 Ti Super (16GB VRAM)', type: 'nvidia', vramGB: 16, unified: false, memBandwidthGBs: 672, description: '256-bit 16GB，適合 14B 8-bit 或 32B Q3_K_M' },
-  { id: 'rtx-4080-16', name: 'NVIDIA RTX 4080 / Super (16GB VRAM)', type: 'nvidia', vramGB: 16, unified: false, memBandwidthGBs: 736, description: '高速 16GB，極佳的 7B/8B/14B 生產速度' },
-  { id: 'rtx-4090-24', name: 'NVIDIA RTX 4090 / 3090 (24GB VRAM)', type: 'nvidia', vramGB: 24, unified: false, memBandwidthGBs: 1008, description: '旗艦單卡！滿載 Qwen2.5-Coder-32B Q4_K_M (19GB) + KV' },
+  // NVIDIA GeForce RTX Series (RTX 30 / 40 / 50 Series)
+  { id: 'rtx-5090-32', name: 'NVIDIA RTX 5090 (32GB GDDR7)', type: 'nvidia', vramGB: 32, unified: false, memBandwidthGBs: 1792, description: 'Blackwell 次世代單卡之王，完美支援 32B 8-bit 或 70B Q3_K_M' },
   { id: 'rtx-5080-16', name: 'NVIDIA RTX 5080 (16GB GDDR7)', type: 'nvidia', vramGB: 16, unified: false, memBandwidthGBs: 1024, description: 'Blackwell 次世代架構，超高 1TB/s 顯存頻寬' },
-  { id: 'rtx-5090-32', name: 'NVIDIA RTX 5090 (32GB GDDR7)', type: 'nvidia', vramGB: 32, unified: false, memBandwidthGBs: 1792, description: '次世代單卡之王，完美支援 32B 8-bit 或 70B Q3_K_M' },
+  { id: 'rtx-5070-12', name: 'NVIDIA RTX 5070 (12GB GDDR7)', type: 'nvidia', vramGB: 12, unified: false, memBandwidthGBs: 672, description: '新一代 12G 顯卡，高速 7B/8B/14B 本地推論' },
+  { id: 'rtx-5060ti-16', name: 'NVIDIA RTX 5060 Ti (16GB GDDR7)', type: 'nvidia', vramGB: 16, unified: false, memBandwidthGBs: 448, description: '高 CP 值 16G 次世代顯卡，可滿載 7B/8B FP16 或 14B Q8 / 32B Q3' },
+  { id: 'rtx-4090-24', name: 'NVIDIA RTX 4090 / 3090 (24GB VRAM)', type: 'nvidia', vramGB: 24, unified: false, memBandwidthGBs: 1008, description: '旗艦單卡！滿載 Qwen2.5-Coder-32B Q4_K_M (19GB) + KV' },
+  { id: 'rtx-4080-16', name: 'NVIDIA RTX 4080 / Super (16GB VRAM)', type: 'nvidia', vramGB: 16, unified: false, memBandwidthGBs: 736, description: '高速 16GB，極佳的 7B/8B/14B 生產速度' },
+  { id: 'rtx-4070tis-16', name: 'NVIDIA RTX 4070 Ti Super (16GB VRAM)', type: 'nvidia', vramGB: 16, unified: false, memBandwidthGBs: 672, description: '256-bit 16GB，適合 14B 8-bit 或 32B Q3_K_M' },
+  { id: 'rtx-4070-12', name: 'NVIDIA RTX 4070 / Super (12GB VRAM)', type: 'nvidia', vramGB: 12, unified: false, memBandwidthGBs: 504, description: '高頻寬 12G，適合 7B/8B 8-bit 高速推論' },
+  { id: 'rtx-4060ti-16', name: 'NVIDIA RTX 4060 Ti (16GB VRAM)', type: 'nvidia', vramGB: 16, unified: false, memBandwidthGBs: 288, description: '經典 16G 顯存，可跑 7B FP16 或 14B Q8' },
+  { id: 'rtx-4060-8', name: 'NVIDIA RTX 4060 (8GB VRAM)', type: 'nvidia', vramGB: 8, unified: false, memBandwidthGBs: 272, description: '入門顯卡，適合 7B Q4_K_M / 3B FP16' },
+  { id: 'rtx-3060-12', name: 'NVIDIA RTX 3060 (12GB VRAM)', type: 'nvidia', vramGB: 12, unified: false, memBandwidthGBs: 360, description: '平民裝機神器，適合 7B/8B Q8 或 14B Q4' },
   { id: 'dual-4090-48', name: '雙卡 2x RTX 4090/3090 (48GB VRAM)', type: 'nvidia', vramGB: 48, unified: false, memBandwidthGBs: 2016, description: '極致創作者雙卡，70B Q4_K_M 或 32B FP16 高速並行' },
   { id: 'dual-5090-64', name: '雙卡 2x RTX 5090 (64GB VRAM)', type: 'nvidia', vramGB: 64, unified: false, memBandwidthGBs: 3584, description: '70B 8-bit / MoE 120B Q4 雙卡直推' },
 
   // AMD & Intel GPUs
   { id: 'amd-rx7900xtx', name: 'AMD Radeon RX 7900 XTX (24GB VRAM)', type: 'amd', vramGB: 24, unified: false, memBandwidthGBs: 960, description: 'ROCm / Vulkan 支援，24GB 大顯存高 CP 值選擇' },
+  { id: 'amd-rx7900xt', name: 'AMD Radeon RX 7900 XT (20GB VRAM)', type: 'amd', vramGB: 20, unified: false, memBandwidthGBs: 800, description: '20GB 大顯存，支援 14B 8-bit 或 32B Q4_K_M' },
+  { id: 'amd-rx7800xt', name: 'AMD Radeon RX 7800 XT (16GB VRAM)', type: 'amd', vramGB: 16, unified: false, memBandwidthGBs: 624, description: '16GB 顯存，性價比極佳的 8B/14B 推論卡' },
+  { id: 'amd-rx9070xt', name: 'AMD Radeon RX 9070 XT (16GB VRAM)', type: 'amd', vramGB: 16, unified: false, memBandwidthGBs: 700, description: 'RDNA 4 次世代架構，高頻寬 16GB' },
+  { id: 'intel-arc-b580', name: 'Intel Arc B580 (12GB VRAM)', type: 'intel', vramGB: 12, unified: false, memBandwidthGBs: 456, description: 'Battlemage 新架構，平價 12G 本地 AI 推論' },
   { id: 'intel-arc-a770', name: 'Intel Arc A770 (16GB VRAM)', type: 'intel', vramGB: 16, unified: false, memBandwidthGBs: 560, description: 'IPEX-LLM / llama.cpp Vulkan 支援，平價 16G 顯卡' },
 
   // Enterprise & Workstation
   { id: 'rtx-6000-ada', name: 'NVIDIA RTX 6000 Ada (48GB VRAM)', type: 'enterprise', vramGB: 48, unified: false, memBandwidthGBs: 960, description: '專業工作站單卡 48G ECC 顯存' },
-  { id: 'a100-80', name: 'NVIDIA A100 / H100 (80GB VRAM)', type: 'enterprise', vramGB: 80, unified: false, memBandwidthGBs: 2000, description: '資料中心旗艦，70B 8-bit / FP16 企業級微調與推論' },
+  { id: 'nvidia-h100-80', name: 'NVIDIA H100 (80GB HBM3)', type: 'enterprise', vramGB: 80, unified: false, memBandwidthGBs: 3350, description: '資料中心頂級旗艦，3.3TB/s 頻寬，70B 8-bit / FP16 企業級微調與推論' },
+  { id: 'nvidia-a100-80', name: 'NVIDIA A100 (80GB HBM2e)', type: 'enterprise', vramGB: 80, unified: false, memBandwidthGBs: 2000, description: '資料中心旗艦，80G 大顯存企業級推論標準' },
 
   // CPU System Memory
   { id: 'cpu-32', name: 'PC / 伺服器 CPU (32GB RAM)', type: 'cpu', vramGB: 32, unified: true, memBandwidthGBs: 60, description: '純 CPU 推論，適合 7B~14B Q4_K_M (速度約 5~15 t/s)' },
   { id: 'cpu-64', name: 'PC / 伺服器 CPU (64GB RAM)', type: 'cpu', vramGB: 64, unified: true, memBandwidthGBs: 80, description: '純 CPU 推論，支援 32B Q8 或 70B Q4 (速度約 2~8 t/s)' },
-  { id: 'cpu-128', name: 'PC / 伺服器 CPU (128GB DDR5 RAM)', type: 'cpu', vramGB: 128, unified: true, memBandwidthGBs: 100, description: 'Day 16 探討的大記憶體共存方案，可跑大型 MoE / 70B Q8' }
+  { id: 'cpu-128', name: 'PC / 伺服器 CPU (128GB DDR5 RAM)', type: 'cpu', vramGB: 128, unified: true, memBandwidthGBs: 100, description: 'Day 16 探討的大記憶體共存方案，可跑大型 MoE / 70B Q8' },
+  { id: 'cpu-256', name: '伺服器 CPU (256GB RAM)', type: 'cpu', vramGB: 256, unified: true, memBandwidthGBs: 120, description: '超大記憶體伺服器，支援 DeepSeek 671B 量化檔 CPU 推論' }
 ];
 
 const MODELS_DATABASE = [
