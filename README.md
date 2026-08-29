@@ -37,7 +37,12 @@
 - 視覺化雷達圖直觀比對多模型綜合表現。
 - 深度整合 [llm-zhtw-agent-exam](https://github.com/ivanusto/llm-zhtw-agent-exam) 繁中 Agent 考卷標準。
 
-### 6. 每週自動化同步（GitHub Actions 定期巡檢）
+### 6. 莫蘭迪雙主題介面
+- 全站色票採低彩度莫蘭迪色系（鼠尾草綠、霧霾藍、豆沙黃、陶土粉），深色（煙燻灰底）與淺色（米灰底）兩套。
+- 右上角一鍵切換，選擇記在 `localStorage`，重新整理後沿用；雷達圖配色同步跟著主題走。
+- 兩套主題的所有文字色對背景皆達 WCAG AA（對比 4.5:1 以上）。
+
+### 7. 每週自動化同步（GitHub Actions 定期巡檢）
 - 內建 `sync_leaderboard.py` 與每週一 GitHub Actions 自動工作流程，定期同步更新 LMSYS Arena 最新 Coding 天梯評分。
 
 ---

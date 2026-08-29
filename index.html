@@ -5,21 +5,46 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenModel Selector ｜ AI 開放模型選擇決策與硬體搭配矩陣</title>
   
+  <!-- 主題預設（避免載入閃爍） -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('oms-theme');
+        if (saved === 'light') document.documentElement.classList.remove('dark');
+        else document.documentElement.classList.add('dark');
+      } catch (e) {}
+    })();
+  </script>
+
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
+    // 全站色票改由 CSS 變數供給（莫蘭迪色系，深／淺兩套）
+    const morandiScale = (family, steps) => Object.fromEntries(
+      steps.map(s => [s, `rgb(var(--c-${family}-${s}) / <alpha-value>)`])
+    );
     tailwind.config = {
       darkMode: 'class',
       theme: {
         extend: {
           colors: {
+            white: 'rgb(var(--c-white) / <alpha-value>)',
+            slate: morandiScale('slate', [100, 200, 300, 400, 500, 700, 800, 900, 950]),
+            emerald: morandiScale('emerald', [300, 400, 500, 950]),
+            indigo: morandiScale('indigo', [200, 300, 400, 500, 600, 950]),
+            cyan: morandiScale('cyan', [300, 400, 500]),
+            amber: morandiScale('amber', [300, 400, 500]),
+            rose: morandiScale('rose', [300, 400, 500, 900, 950]),
+            teal: morandiScale('teal', [400, 500]),
+            orange: morandiScale('orange', [300, 400, 500]),
+            purple: morandiScale('purple', [300, 500]),
             brand: {
-              50: '#ecfdf5',
-              400: '#34d399',
-              500: '#10b981',
-              600: '#059669',
-              900: '#064e3b',
-              950: '#022c22'
+              50: 'rgb(var(--c-emerald-300) / <alpha-value>)',
+              400: 'rgb(var(--c-emerald-400) / <alpha-value>)',
+              500: 'rgb(var(--c-emerald-500) / <alpha-value>)',
+              600: 'rgb(var(--c-teal-500) / <alpha-value>)',
+              900: 'rgb(var(--c-emerald-950) / <alpha-value>)',
+              950: 'rgb(var(--c-emerald-950) / <alpha-value>)'
             }
           },
           fontFamily: {
@@ -33,28 +58,122 @@
 
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  
+
   <!-- Chart.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <style>
+    /* ==========================================================
+       莫蘭迪色票（Morandi Palette）
+       數值為 "R G B"，供 Tailwind 的 rgb(var(--x) / <alpha-value>) 取用。
+       :root      = 淺色莫蘭迪（米灰底）
+       html.dark  = 深色莫蘭迪（煙燻灰底）
+       淺色模式下中性階（slate）刻意反轉：950 最淺、100 最深，
+       因此原有的 bg-slate-950 / text-slate-100 等類別無需改寫即可自動翻面。
+       ========================================================== */
+    :root {
+      --c-white: 51 50 45;
+      --c-slate-100: 51 50 45;
+      --c-slate-200: 69 68 62;
+      --c-slate-300: 87 86 78;
+      --c-slate-400: 95 93 85;
+      --c-slate-500: 107 104 96;
+      --c-slate-700: 198 193 182;
+      --c-slate-800: 219 214 203;
+      --c-slate-900: 244 242 236;
+      --c-slate-950: 234 231 224;
+      --c-emerald-300: 78 98 72;
+      --c-emerald-400: 82 102 75;
+      --c-emerald-500: 87 107 79;
+      --c-emerald-950: 222 228 218;
+      --c-indigo-200: 58 62 78;
+      --c-indigo-300: 71 76 96;
+      --c-indigo-400: 87 93 117;
+      --c-indigo-500: 92 99 121;
+      --c-indigo-600: 86 92 116;
+      --c-indigo-950: 225 227 234;
+      --c-cyan-300: 62 85 86;
+      --c-cyan-400: 76 103 104;
+      --c-cyan-500: 79 107 109;
+      --c-amber-300: 107 84 39;
+      --c-amber-400: 126 100 53;
+      --c-amber-500: 124 98 55;
+      --c-rose-300: 109 69 63;
+      --c-rose-400: 131 84 77;
+      --c-rose-500: 138 89 81;
+      --c-rose-900: 235 216 212;
+      --c-rose-950: 243 229 226;
+      --c-teal-400: 78 106 97;
+      --c-teal-500: 79 108 97;
+      --c-orange-300: 110 76 51;
+      --c-orange-400: 132 96 63;
+      --c-orange-500: 132 95 63;
+      --c-purple-300: 84 69 90;
+      --c-purple-500: 109 91 115;
+    }
+
+    html.dark {
+      --c-white: 240 238 232;
+      --c-slate-100: 230 228 220;
+      --c-slate-200: 211 209 200;
+      --c-slate-300: 188 186 176;
+      --c-slate-400: 155 154 144;
+      --c-slate-500: 150 147 137;
+      --c-slate-700: 75 76 70;
+      --c-slate-800: 56 58 53;
+      --c-slate-900: 42 44 40;
+      --c-slate-950: 31 33 30;
+      --c-emerald-300: 194 206 187;
+      --c-emerald-400: 165 181 158;
+      --c-emerald-500: 139 157 132;
+      --c-emerald-950: 38 44 36;
+      --c-indigo-200: 213 216 226;
+      --c-indigo-300: 185 189 205;
+      --c-indigo-400: 157 163 184;
+      --c-indigo-500: 150 157 181;
+      --c-indigo-600: 111 118 144;
+      --c-indigo-950: 36 38 46;
+      --c-cyan-300: 183 203 203;
+      --c-cyan-400: 154 180 181;
+      --c-cyan-500: 131 160 162;
+      --c-amber-300: 225 207 172;
+      --c-amber-400: 205 183 143;
+      --c-amber-500: 185 161 118;
+      --c-rose-300: 220 190 185;
+      --c-rose-400: 199 160 153;
+      --c-rose-500: 180 136 127;
+      --c-rose-900: 74 55 51;
+      --c-rose-950: 46 35 33;
+      --c-teal-400: 156 182 173;
+      --c-teal-500: 134 163 152;
+      --c-orange-300: 228 194 168;
+      --c-orange-400: 208 166 137;
+      --c-orange-500: 188 142 110;
+      --c-purple-300: 206 189 211;
+      --c-purple-500: 164 145 170;
+    }
+
+    body {
+      transition: background-color .25s ease, color .25s ease;
+    }
+
     /* Custom Scrollbars */
     ::-webkit-scrollbar {
       width: 6px;
       height: 6px;
     }
     ::-webkit-scrollbar-track {
-      background: #0f172a;
+      background: rgb(var(--c-slate-950));
     }
     ::-webkit-scrollbar-thumb {
-      background: #334155;
+      background: rgb(var(--c-slate-700));
       border-radius: 9999px;
     }
     ::-webkit-scrollbar-thumb:hover {
-      background: #475569;
+      background: rgb(var(--c-slate-500));
     }
     .glass-panel {
-      background: rgba(15, 23, 42, 0.75);
+      background: rgb(var(--c-slate-900) / 0.75);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
     }
@@ -112,6 +231,9 @@
           <a href="https://ithelp.ithome.com.tw/articles/10405898" target="_blank" class="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-emerald-400 hover:border-slate-700 text-xs font-semibold transition" title="閱讀 Day 16 iThome 原文專欄">
             <i data-lucide="newspaper" class="w-3.5 h-3.5 text-emerald-400"></i> Day 16 iThome 文章
           </a>
+          <button onclick="toggleTheme()" id="theme-toggle-btn" class="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-emerald-400 hover:border-slate-700 transition" title="切換淺色／深色莫蘭迪主題">
+            <i data-lucide="sun" class="w-4 h-4"></i>
+          </button>
           <a href="https://github.com/ivanusto/open-model-selector" target="_blank" class="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:border-slate-700 transition" title="前往專案 GitHub 倉庫 (open-model-selector)">
             <i data-lucide="github" class="w-4 h-4"></i>
           </a>

@@ -1638,10 +1638,10 @@ function renderRadarChart() {
   }
 
   const colors = [
-    { border: '#10b981', bg: 'rgba(16, 185, 129, 0.2)' },
-    { border: '#6366f1', bg: 'rgba(99, 102, 241, 0.2)' },
-    { border: '#06b6d4', bg: 'rgba(6, 182, 212, 0.2)' },
-    { border: '#f59e0b', bg: 'rgba(245, 158, 11, 0.2)' }
+    { border: themeColor('emerald-500'), bg: themeColor('emerald-500', 0.22) },
+    { border: themeColor('indigo-500'), bg: themeColor('indigo-500', 0.22) },
+    { border: themeColor('cyan-500'), bg: themeColor('cyan-500', 0.22) },
+    { border: themeColor('amber-500'), bg: themeColor('amber-500', 0.22) }
   ];
 
   const datasets = selectedModels.map((m, idx) => {
@@ -1687,10 +1687,10 @@ function renderRadarChart() {
       maintainAspectRatio: false,
       scales: {
         r: {
-          angleLines: { color: 'rgba(255, 255, 255, 0.1)' },
-          grid: { color: 'rgba(255, 255, 255, 0.1)' },
+          angleLines: { color: themeColor('slate-500', 0.28) },
+          grid: { color: themeColor('slate-500', 0.28) },
           pointLabels: {
-            color: '#94a3b8',
+            color: themeColor('slate-400'),
             font: { size: 11, weight: 'bold' }
           },
           ticks: {
@@ -1703,7 +1703,7 @@ function renderRadarChart() {
       plugins: {
         legend: {
           labels: {
-            color: '#f8fafc',
+            color: themeColor('slate-100'),
             font: { size: 12, weight: 'bold' }
           }
         }
@@ -2026,9 +2026,51 @@ function copyText(txt) {
 }
 
 // ----------------------------------------------------
+// 莫蘭迪主題（深色／淺色切換）
+// ----------------------------------------------------
+function themeRGB(token) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(`--c-${token}`).trim();
+  return v || '124 123 114';
+}
+
+function themeColor(token, alpha = 1) {
+  return `rgba(${themeRGB(token).split(/\s+/).join(', ')}, ${alpha})`;
+}
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === 'light') root.classList.remove('dark');
+  else root.classList.add('dark');
+
+  try { localStorage.setItem('oms-theme', theme); } catch (e) {}
+
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) {
+    btn.innerHTML = `<i data-lucide="${theme === 'light' ? 'moon' : 'sun'}" class="w-4 h-4"></i>`;
+    btn.title = theme === 'light' ? '切換為深色莫蘭迪' : '切換為淺色莫蘭迪';
+  }
+
+  // 雷達圖的顏色是畫進 canvas 的，換主題必須重畫
+  const panel = document.getElementById('tab-content-radar');
+  if (panel && !panel.classList.contains('hidden')) {
+    renderRadarChart();
+  } else if (state.radar.chartInstance) {
+    state.radar.chartInstance.destroy();
+    state.radar.chartInstance = null;
+  }
+
+  if (window.lucide) lucide.createIcons();
+}
+
+function toggleTheme() {
+  applyTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark');
+}
+
+// ----------------------------------------------------
 // Global Initialization
 // ----------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
+  applyTheme(document.documentElement.classList.contains('dark') ? 'dark' : 'light');
   setTab('wizard');
   if (window.lucide) lucide.createIcons();
 });
