@@ -1,9 +1,9 @@
 # OpenModel Selector ｜ AI 開放模型選擇決策與硬體搭配矩陣
 
-> **基於 iThome 鐵人賽《[Day 16｜模型選型方法論：五個問題，比排行榜有用](https://ithelp.ithome.com.tw/articles/10405704/)》實測結論，結合 [Arena.ai Coding Leaderboard](https://arena.ai/leaderboard/code) 天梯數據與 [CanIRun.ai](https://www.canirun.ai/) 算力顯存精算模型打造的互動式選型工具。**
+> **基於 iThome 鐵人賽《[Day 16｜模型選型方法論：五個問題幫你跳脫排行榜迷失，找到適合自己任務用的 AI 模型](https://ithelp.ithome.com.tw/articles/10405898)》實測結論，結合 [Arena.ai Coding Leaderboard](https://arena.ai/leaderboard/code) 天梯數據與 [CanIRun.ai](https://www.canirun.ai/) 算力顯存精算模型打造的互動式選型工具。**
 
 - **線上即時體驗網址 (GitHub Pages)**：[https://ivanusto.github.io/open-model-selector/](https://ivanusto.github.io/open-model-selector/)
-- **iThome 專欄原文**：[https://ithelp.ithome.com.tw/articles/10405704/](https://ithelp.ithome.com.tw/articles/10405704/)
+- **iThome 專欄原文**：[https://ithelp.ithome.com.tw/articles/10405898](https://ithelp.ithome.com.tw/articles/10405898)
 - **繁中 Agent 考卷專案**：[ivanusto/llm-zhtw-agent-exam](https://github.com/ivanusto/llm-zhtw-agent-exam)
 
 ---

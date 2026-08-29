@@ -617,8 +617,8 @@ const MODELS_DATABASE = [
 ];
 
 const DAY16_METHODOLOGY = {
-  title: 'Day 16｜模型選型方法論：五個問題，比排行榜有用',
-  articleUrl: 'https://ithelp.ithome.com.tw/articles/10405704/',
+  title: 'Day 16｜模型選型方法論：五個問題幫你跳脫排行榜迷失，找到適合自己任務用的 AI 模型',
+  articleUrl: 'https://ithelp.ithome.com.tw/articles/10405898',
   examRepo: 'https://github.com/ivanusto/llm-zhtw-agent-exam',
   threeMyths: [
     {
