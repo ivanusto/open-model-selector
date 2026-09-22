@@ -1354,6 +1354,55 @@ const MODELS_DATABASE = [
       specs: 'https://huggingface.co/MiniMaxAI/MiniMax-M3',
       quant: 'https://huggingface.co/unsloth/MiniMax-M3-GGUF'
     }
+  },
+  {
+    id: 'nemotron-3-super',
+    name: 'NVIDIA-Nemotron-3-Super-120B-A12B (MoE 120B / Active 12B)',
+    family: 'Nemotron',
+    paramsTotal: 123.6,
+    paramsActive: 12.0,
+    architecture: 'MoE',
+    license: 'NVIDIA Nemotron Open Model License (允許商用)',
+    commercialAllowed: true,
+    contextWindow: 1048576,
+    nativeContext: 262144,
+    arenaKey: 'nvidia-nemotron-3-super-120b-a12b',
+    arenaWebdevKey: null,
+    arenaCodeElo: 1408.3,
+    arenaWebdevElo: null,
+    humanEval: null,
+    sweBench: null,
+    liveCodeBench: 81.2,
+    tcGrade: '未評',
+    tcQuantMinBit: '8-bit 起步（繁中通則）',
+    tcQuantNote: 'Mamba-2 與 LatentMoE 交錯，88 層只有 8 層是注意力層，所以 KV 很小（Mamba 狀態為定量）。官方支援語言含中文。LiveCodeBench 為 v5（2024-07~12）；官方 SWE-Bench（OpenHands）60.47，但未註明是 Verified，這裡不填。',
+    jsonDisciplineScore: null,
+    jsonNote: '第三方 Exxact OpenClaw agent 基準（2026-05-14，DGX Spark）：工具呼叫 17/17、多步鏈深 6 跳，是該次最完整的 agent 表現；同測 Qwen3.5-35B-A3B 為 17/17、4 跳。未在繁中 Agent 考卷上實測。',
+    kvPerTokKB: 8,
+    speedPrefillScore: 84,
+    speedDecodeRating: '16.4 t/s（第三方 Exxact DGX Spark 實測）',
+    workloadFit: { prefill: 3.8, decode: 4.0, agent: 3.9 },
+    engineSupport: 'Production Merged',
+    engineNotes: '官方提供 vLLM 與 SGLang 啟動方式；unsloth 已發布 GGUF。預設上下文 256K，開到 1M 要另設參數。',
+    storageAdvise: '官方 NVFP4 約 80 GB，128GB 機器可放並留共存餘裕。',
+    examScore: null,
+    isDay16Featured: false,
+    day16Role: '128GB 等級工具呼叫最完整的第三方實測代表：多步鏈深，但 decode 偏慢',
+    editorial: 'workloadFit、speedPrefillScore 依規則產生（架構與啟用參數量）；tcGrade 未評',
+    quantProfiles: {
+      BF16: { sizeGB: 247.2, bpw: 16.0, recSpeedGpu: '256 GB 以上' },
+      FP8: { sizeGB: 128.4, bpw: 8.3, recSpeedGpu: '雙機 GB10 / 192 GB 以上' },
+      NVFP4: { sizeGB: 80.3, bpw: 5.2, recSpeedGpu: '16.4 t/s（第三方 Exxact DGX Spark 實測）' },
+      Q8_0: { sizeGB: 128.5, bpw: 8.3, recSpeedGpu: '192 GB 以上' },
+      'UD-Q4_K_M': { sizeGB: 82.5, bpw: 5.3, recSpeedGpu: '96~128 GB' }
+    },
+    sources: {
+      arena: 'https://arena.ai/leaderboard/text/coding',
+      specs: 'https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16',
+      benchmarks: 'https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16（LiveCodeBench v5）',
+      quant: 'https://huggingface.co/unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF',
+      local: 'https://www.exxactcorp.com/blog/benchmarks/benchmarking-local-ai-agents-on-nvidia-dgx-spark（第三方）'
+    }
   }
 ];
 

@@ -24,9 +24,10 @@
 - **即時動態計算**：自訂 Context Length（2k~128k）與共存預留空間，精準計算 `模型權重 + KV Cache + CUDA 執行期`，輸出完美暢跑 / 良好運行 / 部分卸載 CPU / OOM 燈號與預估 Decode t/s。
 
 ### 3. 開放權重 Coding 天梯榜（Arena.ai 整合）
-- 收錄 28 款開放權重模型：2026 年的 DeepSeek-V4.1-Flash、DeepSeek-V4-Flash／V4-Pro、Kimi-K3、GLM-5.3-Flash、MiniMax-M3、Qwen3.8-27B、Qwen3.8-Flash-Next、Qwen3.6-35B-A3B、Qwen3-Coder-Next、Gemma 4（31B、26B-A4B）、Mistral Small 4／Medium 3.5、Devstral Small 2、Llama 4 Scout、gpt-oss-120b／20b、Ornith 1.5、Muse-Glimmer，以及保留作對照的上一代模型（Qwen2.5-Coder、DeepSeek-R1／V3、Llama 3.3、Codestral、Gemma 2、Yi-Coder）。
+- 收錄 29 款開放權重模型：2026 年的 DeepSeek-V4.1-Flash、DeepSeek-V4-Flash／V4-Pro、Kimi-K3、GLM-5.3-Flash、MiniMax-M3、Qwen3.8-27B、Qwen3.8-Flash-Next、Qwen3.6-35B-A3B、Qwen3-Coder-Next、Gemma 4（31B、26B-A4B）、Mistral Small 4／Medium 3.5、Devstral Small 2、Llama 4 Scout、Nemotron-3-Super、gpt-oss-120b／20b、Ornith 1.5、Muse-Glimmer，以及保留作對照的上一代模型（Qwen2.5-Coder、DeepSeek-R1／V3、Llama 3.3、Codestral、Gemma 2、Yi-Coder）。
 - 指標包含 LMArena Text Coding 分數、WebDev 分數、SWE-bench Verified、LiveCodeBench、HumanEval、繁中評級、JSON 紀律分、KV 每 Token 成本。
 - **每個數字都附來源**（LMArena、Hugging Face model card 與 config、繁中 Agent 考卷、作者 GB10 實測），查不到來源的欄位一律顯示「無資料」，不以估計值填補。KV 每 Token 成本為 BF16、只計全注意力層，依 config.json 推導。
+- Agent 模式下，考過繁中 Agent 考卷的模型排在沒考過的前面；沒考過的不受 JSON 紀律門檻淘汰，推薦卡片標示「未經考卷驗證」。
 - 繁中評級、工作負載適配與 Prefill 分數屬於編輯評分；Day 16 以外的新模型依架構與啟用參數量套用固定規則，繁中評級標示為「未評」。
 - 支援多模型橫向 PK 矩陣（Side-by-Side Comparison）。
 

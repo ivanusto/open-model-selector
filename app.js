@@ -110,6 +110,17 @@ function pickQuantKey(m, tcLang) {
   return prefs.find(k => keys.includes(k)) || keys[0];
 }
 
+// 沒考過繁中 Agent 考卷的模型，在推薦卡片上明確標示
+function examBadge(m) {
+  if (!isKnown(m.jsonDisciplineScore)) {
+    return '<span class="inline-block align-middle whitespace-nowrap shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-normal">未經考卷驗證</span>';
+  }
+  if (m.jsonRecheckPending) {
+    return '<span class="inline-block align-middle whitespace-nowrap shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-normal">考卷待重測</span>';
+  }
+  return '';
+}
+
 function sourcesHtml(m) {
   const src = m.sources || {};
   const items = [
@@ -358,6 +369,14 @@ function evaluateWizard() {
 
   // Score and Rank remaining models according to Day 16 empirical weights
   remaining.sort((a, b) => {
+    // Agent 模式：考過繁中 Agent 考卷的模型排在沒考過的前面，
+    // 避免「沒受測」反而比「受測後分數普通」佔便宜
+    if (ans.workload === 'agent') {
+      const aTested = isKnown(a.jsonDisciplineScore);
+      const bTested = isKnown(b.jsonDisciplineScore);
+      if (aTested !== bTested) return aTested ? -1 : 1;
+    }
+
     let aScore = 0;
     let bScore = 0;
 
@@ -379,8 +398,9 @@ function evaluateWizard() {
       if (b.architecture === 'MoE') bScore += 150;
     } else if (ans.workload === 'agent') {
       // Agent loops: JSON discipline + Low KV cache cost + MoE decode throughput
-      aScore += scoreValue(a, 'jsonDisciplineScore') * 3.0;
-      bScore += scoreValue(b, 'jsonDisciplineScore') * 3.0;
+      // 未受測者同組比較，這一項一律不計，不再用中位數代入
+      aScore += (isKnown(a.jsonDisciplineScore) ? a.jsonDisciplineScore : 0) * 3.0;
+      bScore += (isKnown(b.jsonDisciplineScore) ? b.jsonDisciplineScore : 0) * 3.0;
       // Lower KV cost is significantly better (e.g. Ornith 10.56 KB vs 27B 34.5 KB = 3.3x gap)
       aScore += Math.max(0, (40 - a.kvPerTokKB)) * 10;
       bScore += Math.max(0, (40 - b.kvPerTokKB)) * 10;
@@ -728,6 +748,7 @@ function renderWizard() {
                   <h3 class="text-2xl font-black text-white flex items-center gap-2">
                     ${champion.name}
                     ${champion.isDay16Featured ? '<span class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-normal">Day 16 實測標竿</span>' : ''}
+                    ${examBadge(champion)}
                   </h3>
                   <p class="text-xs text-slate-300 mt-1.5 leading-relaxed">${champion.day16Role || champion.engineNotes}</p>
                 </div>
@@ -780,7 +801,7 @@ function renderWizard() {
                       ${remaining.slice(1, 4).map(alt => `
                         <div class="p-3 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs hover:border-slate-700 transition">
                           <div>
-                            <span class="font-bold text-white text-sm">${alt.name}</span>
+                            <span class="font-bold text-white text-sm">${alt.name}</span> ${examBadge(alt)}
                             <span class="text-slate-400 block text-[11px]">${alt.architecture} (${alt.paramsTotal}B) ｜ 授權: ${alt.license} ｜ JSON 紀律: ${fmt(alt.jsonDisciplineScore, '/100')}</span>
                           </div>
                           <div class="text-right">
