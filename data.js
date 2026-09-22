@@ -283,6 +283,7 @@ const MODELS_DATABASE = [
     tcQuantNote: 'Day 15 考卷：BF16 繁中 20/20、簡體 0；NVFP4 掉到 19/20 且四輪有三輪洩漏簡體。Day 16 實測 8-bit 解碼 29.9 t/s。',
     jsonDisciplineScore: 52,
     jsonNote: 'Day 15 JSON 緊湊度：BF16 有 24/50 輪吐多行（NVFP4 為 40/50）。分數 = 100 × (1 − 多行輪數 / 50)。工具呼叫十輪全對。',
+    jsonRecheckPending: '社群回報新版格式紀律已改善，作者尚未重測；重測前 Agent 篩選不以 Day 15 分數淘汰',
     kvPerTokKB: 20,
     speedPrefillScore: 82,
     speedDecodeRating: '高速（8-bit 實測 29.9 t/s）',
@@ -328,7 +329,7 @@ const MODELS_DATABASE = [
     tcQuantMinBit: '8-bit 起步',
     tcQuantNote: 'Day 12 實測：q4_k_m 繁中 PPL 劣化 +0.842%、英文 +0.505%（1.67 倍）；8-bit 兩語言都無損。GB10 單路 decode：BF16 4.66、q8_0 7.93、q4_k_m 11.77 t/s（llama.cpp）。',
     jsonDisciplineScore: 100,
-    jsonNote: 'Day 15 JSON 緊湊度 0/50 輪吐多行，是考卷上格式紀律最好的一顆。',
+    jsonNote: 'Day 15 JSON 緊湊度 0/50 輪吐多行，是考卷上格式紀律最好的一款。',
     kvPerTokKB: 64,
     speedPrefillScore: 98,
     speedDecodeRating: '偏慢（8-bit 實測 7.9 t/s）',
@@ -1372,7 +1373,7 @@ const DAY16_METHODOLOGY = {
       id: 2,
       title: '排行榜不量你的工作負載形狀',
       icon: 'activity',
-      summary: '同一顆密集 27B，prefill 對 decode 的效率差了 200 倍。做長文摘要是神器，拿來寫長文是折磨。榜上只有一個分數。',
+      summary: '同一款密集 27B，prefill 對 decode 的效率差了 200 倍。做長文摘要是神器，拿來寫長文是折磨。榜上只有一個分數。',
       quote: '看啟用參數量，不是總參數量。'
     },
     {

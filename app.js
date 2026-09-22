@@ -284,7 +284,7 @@ function evaluateWizard() {
   } else if (ans.workload === 'agent') {
     // Agent: Demands Prefill + Decode + JSON Discipline + Low KV Cache
     remaining.forEach(m => {
-      if (isKnown(m.jsonDisciplineScore) && m.jsonDisciplineScore < 80) {
+      if (isKnown(m.jsonDisciplineScore) && m.jsonDisciplineScore < 80 && !m.jsonRecheckPending) {
         discarded.push({
           model: m,
           step: 1,
@@ -292,7 +292,7 @@ function evaluateWizard() {
         });
       }
     });
-    remaining = remaining.filter(m => !isKnown(m.jsonDisciplineScore) || m.jsonDisciplineScore >= 80);
+    remaining = remaining.filter(m => !isKnown(m.jsonDisciplineScore) || m.jsonDisciplineScore >= 80 || m.jsonRecheckPending);
   }
 
   // Step 2: Traditional Chinese Filter
@@ -623,7 +623,7 @@ function renderWizard() {
         </div>
         <div class="text-right">
           <span class="text-xs text-slate-400">存活候選模型</span>
-          <div class="text-2xl font-black text-emerald-400 font-mono">${remaining.length} <span class="text-xs text-slate-400 font-normal">/ ${window.MODELS_DATABASE.length} 顆</span></div>
+          <div class="text-2xl font-black text-emerald-400 font-mono">${remaining.length} <span class="text-xs text-slate-400 font-normal">/ ${window.MODELS_DATABASE.length} 款</span></div>
         </div>
       </div>
 
@@ -679,7 +679,7 @@ function renderWizard() {
         ${discarded.length > 0 ? `
           <div class="bg-slate-900/60 border border-rose-950/60 rounded-2xl p-5">
             <div class="flex items-center justify-between text-xs font-semibold text-rose-400 mb-3">
-              <span class="flex items-center gap-1.5"><i data-lucide="filter-x" class="w-4 h-4"></i> 已被淘汰的模型 (${discarded.length} 顆)</span>
+              <span class="flex items-center gap-1.5"><i data-lucide="filter-x" class="w-4 h-4"></i> 已被淘汰的模型 (${discarded.length} 款)</span>
               <span class="text-slate-500">五問刪去法</span>
             </div>
             <div class="space-y-2 max-h-48 overflow-y-auto pr-1 text-xs">
@@ -775,7 +775,7 @@ function renderWizard() {
                 <!-- Other Alternate Options -->
                 ${remaining.length > 1 ? `
                   <div>
-                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-2">其他備選方案 (${remaining.length - 1} 顆)</span>
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-2">其他備選方案 (${remaining.length - 1} 款)</span>
                     <div class="space-y-2">
                       ${remaining.slice(1, 4).map(alt => `
                         <div class="p-3 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs hover:border-slate-700 transition">
@@ -920,7 +920,7 @@ function renderWizardStepQuestion(step, ans) {
         <div class="text-xs font-mono text-emerald-400 uppercase tracking-wider mb-1">問題三 (Question 3)</div>
         <h3 class="text-xl font-bold text-white mb-2">它要跟誰分這台機器的記憶體？</h3>
         <p class="text-xs text-slate-400 mb-6 leading-relaxed">
-          一顆模型的真實佔用是<strong>權重 + KV 快取 + 留給別人的餘裕</strong>。KV 每 token 成本差距可達 3.3 倍。
+          一款模型的真實佔用是<strong>權重 + KV 快取 + 留給別人的餘裕</strong>。KV 每 token 成本差距可達 3.3 倍。
         </p>
 
         <div class="space-y-3">
@@ -933,7 +933,7 @@ function renderWizardStepQuestion(step, ans) {
                   <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">推薦</span>
                 </div>
                 <div class="text-xs text-slate-400 mt-1">
-                  模型只是機器上的服務之一。保留餘裕給 ComfyUI 繪圖、第二顆小模型或日常開發。選 27B/32B 量化檔或 gpt-oss MXFP4。
+                  模型只是機器上的服務之一。保留餘裕給 ComfyUI 繪圖、第二款小模型或日常開發。選 27B/32B 量化檔或 gpt-oss MXFP4。
                 </div>
               </div>
             </div>
@@ -945,7 +945,7 @@ function renderWizardStepQuestion(step, ans) {
               <div>
                 <div class="font-bold text-sm">獨佔型 (Dedicated 專用推理機)</div>
                 <div class="text-xs text-slate-400 mt-1">
-                  整台機器只為這一顆模型服務（如 Ornith BF16 120GB 峰值），效能與上下文拉滿，其他服務讓路。
+                  整台機器只為這一款模型服務（如 Ornith BF16 120GB 峰值），效能與上下文拉滿，其他服務讓路。
                 </div>
               </div>
             </div>
@@ -1374,7 +1374,7 @@ function renderLeaderboard() {
 
         <!-- Compare Action Button -->
         <button onclick="openCompareModal()" class="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-lg shadow-indigo-950/50 flex items-center gap-2 transition self-start lg:self-auto">
-          <i data-lucide="columns-3" class="w-4 h-4"></i> 橫向對比矩陣 (<span id="compare-count">${lb.selectedCompareIds.length}</span> 顆)
+          <i data-lucide="columns-3" class="w-4 h-4"></i> 橫向對比矩陣 (<span id="compare-count">${lb.selectedCompareIds.length}</span> 款)
         </button>
       </div>
 
@@ -1538,7 +1538,7 @@ function toggleCompareSelection(id) {
     arr.splice(idx, 1);
   } else {
     if (arr.length >= 4) {
-      showToast('最多同時對比 4 顆模型');
+      showToast('最多同時對比 4 款模型');
       return;
     }
     arr.push(id);
@@ -1801,13 +1801,13 @@ function toggleRadarModel(id) {
   const idx = arr.indexOf(id);
   if (idx >= 0) {
     if (arr.length <= 1) {
-      showToast('請至少保留一顆模型進行展示');
+      showToast('請至少保留一款模型進行展示');
       return;
     }
     arr.splice(idx, 1);
   } else {
     if (arr.length >= 4) {
-      showToast('雷達圖最多同時繪製 4 顆模型');
+      showToast('雷達圖最多同時繪製 4 款模型');
       return;
     }
     arr.push(id);
@@ -1841,7 +1841,7 @@ function renderDay16() {
             ${data.title}
           </h1>
           <p class="text-sm text-slate-300 leading-relaxed">
-            「如果排行榜能回答『我該用哪顆』，這個系列可以少寫十天。它不能，原因有三個，而且每一個都在我們自己的數據裡現形過。」
+            「如果排行榜能回答『我該用哪款』，這個系列可以少寫十天。它不能，原因有三個，而且每一個都在我們自己的數據裡現形過。」
           </p>
         </div>
 
@@ -1962,6 +1962,7 @@ function openModelDetailModal(modelId) {
         <div>
           <h4 class="font-bold text-white mb-1">JSON 格式遵循與 Agent 紀律：</h4>
           <p class="text-slate-300 leading-relaxed">${model.jsonNote} (評分: ${fmt(model.jsonDisciplineScore, '/100')})</p>
+          ${model.jsonRecheckPending ? `<p class="text-amber-300 leading-relaxed mt-1">待重測：${model.jsonRecheckPending}</p>` : ''}
         </div>
         <div>
           <h4 class="font-bold text-white mb-1">推理引擎與生態支援狀態：</h4>
@@ -2025,7 +2026,7 @@ function openCompareModal() {
     <div class="flex items-start justify-between pb-4 border-b border-slate-800">
       <div>
         <span class="text-xs font-semibold text-indigo-400 uppercase">橫向對比矩陣</span>
-        <h2 class="text-xl font-bold text-white">模型全維度 PK (${models.length} 顆)</h2>
+        <h2 class="text-xl font-bold text-white">模型全維度 PK (${models.length} 款)</h2>
       </div>
       <button onclick="closeModal('compare-modal')" class="text-slate-400 hover:text-white text-lg p-1">
         <i data-lucide="x" class="w-5 h-5"></i>
