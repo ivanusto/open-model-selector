@@ -70,6 +70,61 @@ function getModel(id) {
   return window.MODELS_DATABASE.find(m => m.id === id);
 }
 
+// 沒有公開來源的數值在 data.js 裡是 null，顯示時一律寫「無資料」
+function isKnown(v) {
+  return v !== null && v !== undefined && !(typeof v === 'number' && isNaN(v));
+}
+
+function fmtContext(tokens) {
+  return tokens >= 1000000 ? `${+(tokens / 1048576).toFixed(1)}M` : `${(tokens / 1024).toFixed(0)}k`;
+}
+
+function fmt(v, suffix = '') {
+  return isKnown(v) ? `${v}${suffix}` : '<span class="text-slate-500 font-normal">無資料</span>';
+}
+
+// 排序用：缺值以全體已知值的中位數代入，不加分也不扣分
+const _medianCache = {};
+function fieldMedian(field) {
+  if (field in _medianCache) return _medianCache[field];
+  const vals = window.MODELS_DATABASE.map(m => m[field]).filter(isKnown).sort((a, b) => a - b);
+  const mid = Math.floor(vals.length / 2);
+  _medianCache[field] = vals.length === 0 ? 0 : (vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2);
+  return _medianCache[field];
+}
+
+function scoreValue(m, field) {
+  return isKnown(m[field]) ? m[field] : fieldMedian(field);
+}
+
+// 最小的量化檔體積（有些模型只有 EXL3 或 Q2 之類的檔）
+function minQuantSizeGB(m) {
+  const sizes = Object.values(m.quantProfiles).map(q => q.sizeGB).filter(isKnown);
+  return sizes.length ? Math.min(...sizes) : 1000;
+}
+
+// 依繁中需求挑量化檔：繁中優先 8-bit，否則 Q4_K_M，都沒有就取第一個
+function pickQuantKey(m, tcLang) {
+  const keys = Object.keys(m.quantProfiles);
+  const prefs = tcLang === 'yes' ? ['Q8_0', 'FP8', 'Q6_K', 'Q4_K_M'] : ['Q4_K_M', 'MXFP4', 'NVFP4', 'Q8_0'];
+  return prefs.find(k => keys.includes(k)) || keys[0];
+}
+
+function sourcesHtml(m) {
+  const src = m.sources || {};
+  const items = [
+    ['Arena', src.arena],
+    ['規格', src.specs],
+    ['基準', src.benchmarks],
+    ['本機實測', src.local]
+  ].filter(([, v]) => v);
+  if (!items.length) return '<span class="text-slate-500">無來源紀錄</span>';
+  return items.map(([k, v]) => {
+    const isUrl = /^https?:\/\//.test(v);
+    return `<span class="block"><span class="text-slate-400">${k}：</span>${isUrl ? `<a href="${v}" target="_blank" rel="noopener" class="text-emerald-400 hover:underline break-all">${v}</a>` : v}</span>`;
+  }).join('') + (src.asOf ? `<span class="block text-slate-500 mt-1">擷取日期：${src.asOf}</span>` : '');
+}
+
 // ----------------------------------------------------
 // WebGPU / WebGL Hardware Auto Detection
 // ----------------------------------------------------
@@ -229,7 +284,7 @@ function evaluateWizard() {
   } else if (ans.workload === 'agent') {
     // Agent: Demands Prefill + Decode + JSON Discipline + Low KV Cache
     remaining.forEach(m => {
-      if (m.jsonDisciplineScore < 80) {
+      if (isKnown(m.jsonDisciplineScore) && m.jsonDisciplineScore < 80) {
         discarded.push({
           model: m,
           step: 1,
@@ -237,7 +292,7 @@ function evaluateWizard() {
         });
       }
     });
-    remaining = remaining.filter(m => m.jsonDisciplineScore >= 80);
+    remaining = remaining.filter(m => !isKnown(m.jsonDisciplineScore) || m.jsonDisciplineScore >= 80);
   }
 
   // Step 2: Traditional Chinese Filter
@@ -259,7 +314,7 @@ function evaluateWizard() {
   const maxAllowableGB = ans.coexist === 'coexist' ? (hw.vramGB - state.canirun.reserveCoexistGB) : hw.vramGB;
 
   remaining.forEach(m => {
-    const minQ4Size = m.quantProfiles['Q4_K_M']?.sizeGB || m.quantProfiles['Q8_0']?.sizeGB || 1000;
+    const minQ4Size = minQuantSizeGB(m);
     if (minQ4Size > hw.vramGB) {
       discarded.push({
         model: m,
@@ -269,7 +324,7 @@ function evaluateWizard() {
     }
   });
   remaining = remaining.filter(m => {
-    const minQ4Size = m.quantProfiles['Q4_K_M']?.sizeGB || m.quantProfiles['Q8_0']?.sizeGB || 1000;
+    const minQ4Size = minQuantSizeGB(m);
     return minQ4Size <= hw.vramGB;
   });
 
@@ -324,8 +379,8 @@ function evaluateWizard() {
       if (b.architecture === 'MoE') bScore += 150;
     } else if (ans.workload === 'agent') {
       // Agent loops: JSON discipline + Low KV cache cost + MoE decode throughput
-      aScore += a.jsonDisciplineScore * 3.0;
-      bScore += b.jsonDisciplineScore * 3.0;
+      aScore += scoreValue(a, 'jsonDisciplineScore') * 3.0;
+      bScore += scoreValue(b, 'jsonDisciplineScore') * 3.0;
       // Lower KV cost is significantly better (e.g. Ornith 10.56 KB vs 27B 34.5 KB = 3.3x gap)
       aScore += Math.max(0, (40 - a.kvPerTokKB)) * 10;
       bScore += Math.max(0, (40 - b.kvPerTokKB)) * 10;
@@ -364,8 +419,9 @@ function evaluateWizard() {
     if (b.isDay16Featured) bScore += 80;
 
     // 6. Arena Elo (mild weight, preventing leaderboard bias from overruling Day 16 rules)
-    aScore += (a.arenaCodeElo - 1200) * 0.3;
-    bScore += (b.arenaCodeElo - 1200) * 0.3;
+    // 2026-09 起分數尺度約 1300~1550，權重 0.2 讓全距影響維持在 50 分左右
+    aScore += (scoreValue(a, 'arenaCodeElo') - 1400) * 0.2;
+    bScore += (scoreValue(b, 'arenaCodeElo') - 1400) * 0.2;
 
     return bScore - aScore;
   });
@@ -504,7 +560,7 @@ function renderWizard() {
           <span class="text-slate-400 text-xs font-semibold mr-1">常用快捷選取：</span>
           ${[
             { id: 'nvidia-gb10', label: 'NVIDIA GB10 (128GB)' },
-            { id: 'mac-128', label: 'Apple M5 / M4 (128GB)' },
+            { id: 'mac-128', label: 'Apple M5 Max (128GB)' },
             { id: 'rtx-5090-32', label: 'RTX 5090 (32GB)' },
             { id: 'rtx-4090-24', label: 'RTX 4090 (24GB)' },
             { id: 'rtx-5060ti-16', label: 'RTX 5060 Ti (16GB)' },
@@ -663,7 +719,7 @@ function renderWizard() {
             <!-- Top Pick Champion -->
             ${(() => {
               const champion = remaining[0];
-              const quantKey = ans.tcLang === 'yes' ? (champion.quantProfiles['Q8_0'] ? 'Q8_0' : 'Q4_K_M') : 'Q4_K_M';
+              const quantKey = pickQuantKey(champion, ans.tcLang);
               const quant = champion.quantProfiles[quantKey] || Object.values(champion.quantProfiles)[0];
 
               return `
@@ -685,8 +741,8 @@ function renderWizard() {
                   </div>
                   <div class="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                     <span class="text-slate-400 block text-[11px]">Arena Coding Elo</span>
-                    <span class="font-bold text-emerald-400 text-sm font-mono">${champion.arenaCodeElo}</span>
-                    <span class="text-[10px] text-slate-400 block">HumanEval: ${champion.humanEval}%</span>
+                    <span class="font-bold text-emerald-400 text-sm font-mono">${fmt(champion.arenaCodeElo)}</span>
+                    <span class="text-[10px] text-slate-400 block">HumanEval: ${fmt(champion.humanEval, '%')}</span>
                   </div>
                   <div class="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                     <span class="text-slate-400 block text-[11px]">繁中評級 / 量化底線</span>
@@ -695,8 +751,8 @@ function renderWizard() {
                   </div>
                   <div class="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                     <span class="text-slate-400 block text-[11px]">KV 每 Token 成本</span>
-                    <span class="font-bold text-cyan-300 text-sm font-mono">${champion.kvPerTokKB} KB</span>
-                    <span class="text-[10px] text-slate-400 block">16k Cache: ~${((champion.kvPerTokKB * 16384)/1048576).toFixed(1)} GB</span>
+                    <span class="font-bold text-cyan-300 text-sm font-mono">${fmt(champion.kvPerTokKB, ' KB')}</span>
+                    <span class="text-[10px] text-slate-400 block">16k Cache: ${isKnown(champion.kvPerTokKB) ? `~${((champion.kvPerTokKB * 16384)/1048576).toFixed(1)} GB` : '無資料'}</span>
                   </div>
                 </div>
 
@@ -725,10 +781,10 @@ function renderWizard() {
                         <div class="p-3 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs hover:border-slate-700 transition">
                           <div>
                             <span class="font-bold text-white text-sm">${alt.name}</span>
-                            <span class="text-slate-400 block text-[11px]">${alt.architecture} (${alt.paramsTotal}B) ｜ 授權: ${alt.license} ｜ JSON 紀律: ${alt.jsonDisciplineScore}/100</span>
+                            <span class="text-slate-400 block text-[11px]">${alt.architecture} (${alt.paramsTotal}B) ｜ 授權: ${alt.license} ｜ JSON 紀律: ${fmt(alt.jsonDisciplineScore, '/100')}</span>
                           </div>
                           <div class="text-right">
-                            <span class="text-emerald-400 font-mono font-bold">${alt.arenaCodeElo} Elo</span>
+                            <span class="text-emerald-400 font-mono font-bold">${fmt(alt.arenaCodeElo, ' Elo')}</span>
                             <span class="text-[10px] text-slate-400 block">繁中 ${alt.tcGrade}</span>
                           </div>
                         </div>
@@ -993,7 +1049,7 @@ function setWizardAnswer(key, val) {
 
 function copyStartupCmd(modelId) {
   const model = getModel(modelId);
-  const quantKey = state.wizard.answers.tcLang === 'yes' ? (model.quantProfiles['Q8_0'] ? 'Q8_0' : 'Q4_K_M') : 'Q4_K_M';
+  const quantKey = pickQuantKey(model, state.wizard.answers.tcLang);
   const cmd = `./llama-server -m models/${model.id}.${quantKey}.gguf -c 16384 -ngl 99 --port 8080 --host 0.0.0.0`;
   navigator.clipboard.writeText(cmd);
   showToast('已複製啟動指令至剪貼簿！');
@@ -1295,8 +1351,11 @@ function renderLeaderboard() {
 
   // Sort
   models.sort((a, b) => {
-    let valA = a[lb.sortBy];
-    let valB = b[lb.sortBy];
+    const valA = a[lb.sortBy];
+    const valB = b[lb.sortBy];
+    if (!isKnown(valA) && !isKnown(valB)) return 0;
+    if (!isKnown(valA)) return 1;
+    if (!isKnown(valB)) return -1;
     return lb.sortDesc ? (valB - valA) : (valA - valB);
   });
 
@@ -1310,6 +1369,7 @@ function renderLeaderboard() {
             <span class="px-2 py-0.5 rounded-full text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">Coding Elo & 實測維度整合</span>
           </div>
           <h2 class="text-xl font-bold text-white mt-1">開放權重程式碼模型競技場排行榜</h2>
+          <p class="text-[11px] text-slate-400 mt-1">Arena 快照：${(window.DATA_ASOF || {}).arena || '無資料'} ｜ 規格核對：${(window.DATA_ASOF || {}).specs || '無資料'} ｜ 查不到來源的數字顯示「無資料」</p>
         </div>
 
         <!-- Compare Action Button -->
@@ -1352,6 +1412,9 @@ function renderLeaderboard() {
           <label class="block font-semibold text-slate-300 mb-1.5">排序依據 (Sort By)：</label>
           <select onchange="setLeaderboardSort(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
             <option value="arenaCodeElo" ${lb.sortBy === 'arenaCodeElo' ? 'selected' : ''}>Arena Coding Elo (高到低)</option>
+            <option value="arenaWebdevElo" ${lb.sortBy === 'arenaWebdevElo' ? 'selected' : ''}>Arena WebDev 分數</option>
+            <option value="sweBench" ${lb.sortBy === 'sweBench' ? 'selected' : ''}>SWE-bench Verified</option>
+            <option value="liveCodeBench" ${lb.sortBy === 'liveCodeBench' ? 'selected' : ''}>LiveCodeBench</option>
             <option value="humanEval" ${lb.sortBy === 'humanEval' ? 'selected' : ''}>HumanEval 正確率</option>
             <option value="jsonDisciplineScore" ${lb.sortBy === 'jsonDisciplineScore' ? 'selected' : ''}>JSON 格式禮儀評分</option>
             <option value="paramsTotal" ${lb.sortBy === 'paramsTotal' ? 'selected' : ''}>總參數量 (Params)</option>
@@ -1402,13 +1465,14 @@ function renderLeaderboard() {
                           ${model.name}
                           ${model.isDay16Featured ? '<span class="px-1.5 py-0.5 rounded text-[9px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Day 16</span>' : ''}
                         </div>
-                        <div class="text-[11px] text-slate-400 font-mono">${model.family} ｜ 上下文: ${(model.contextWindow / 1024).toFixed(0)}k</div>
+                        <div class="text-[11px] text-slate-400 font-mono">${model.family} ｜ 上下文: ${fmtContext(model.contextWindow)}</div>
                       </div>
                     </div>
                   </td>
                   <td class="py-3.5 px-4 text-center font-mono">
-                    <span class="font-black text-emerald-400 text-sm">${model.arenaCodeElo}</span>
-                    <span class="block text-[10px] text-slate-400">HumanEval: ${model.humanEval}%</span>
+                    <span class="font-black text-emerald-400 text-sm">${fmt(model.arenaCodeElo)}</span>
+                    <span class="block text-[10px] text-slate-400">WebDev: ${fmt(model.arenaWebdevElo)}</span>
+                    <span class="block text-[10px] text-slate-400">SWE-V: ${fmt(model.sweBench, '%')}</span>
                   </td>
                   <td class="py-3.5 px-4 text-center font-mono">
                     <span class="px-2 py-0.5 rounded text-[11px] font-bold ${model.architecture === 'MoE' ? 'bg-purple-500/20 text-purple-300' : 'bg-slate-800 text-slate-300'}">
@@ -1422,12 +1486,12 @@ function renderLeaderboard() {
                   </td>
                   <td class="py-3.5 px-4 text-center font-mono">
                     <div class="inline-flex items-center gap-1">
-                      <span class="font-bold text-slate-200">${model.jsonDisciplineScore}</span>
-                      <span class="text-[10px] text-slate-500">/100</span>
+                      <span class="font-bold text-slate-200">${fmt(model.jsonDisciplineScore)}</span>
+                      ${isKnown(model.jsonDisciplineScore) ? '<span class="text-[10px] text-slate-500">/100</span>' : ''}
                     </div>
                   </td>
                   <td class="py-3.5 px-4 text-center font-mono text-cyan-300">
-                    ${model.kvPerTokKB} KB
+                    ${fmt(model.kvPerTokKB, ' KB')}
                   </td>
                   <td class="py-3.5 px-4 font-mono text-[11px]">
                     <span class="${model.commercialAllowed ? 'text-emerald-400' : 'text-amber-400'}">${model.license}</span>
@@ -1650,20 +1714,21 @@ function renderRadarChart() {
     // Normalize metrics 0~100
     const prefillScore = m.speedPrefillScore;
     const decodeScore = m.workloadFit.decode * 20;
-    const tcScore = m.tcGrade === 'S' ? 98 : m.tcGrade === 'S-' ? 92 : m.tcGrade === 'A' ? 88 : m.tcGrade === 'A-' ? 82 : m.tcGrade === 'B+' ? 75 : 65;
-    const jsonScore = m.jsonDisciplineScore;
+    const tcScore = m.tcGrade === '未評' ? null : m.tcGrade === 'S' ? 98 : m.tcGrade === 'S-' ? 92 : m.tcGrade === 'A' ? 88 : m.tcGrade === 'A-' ? 82 : m.tcGrade === 'B+' ? 75 : 65;
+    const jsonScore = isKnown(m.jsonDisciplineScore) ? m.jsonDisciplineScore : null; // 無資料的軸留空
     const kvEfficiency = Math.max(10, 100 - (m.kvPerTokKB * 2.2)); // Lower KB is better
     const licenseScore = m.license === 'MIT' ? 100 : m.license === 'Apache 2.0' ? 95 : m.commercialAllowed ? 80 : 50;
     const ecosystemScore = m.engineSupport.includes('Experimental') ? 40 : 95;
 
     return {
-      label: m.name,
+      label: [m.name, !isKnown(m.jsonDisciplineScore) && 'JSON 紀律無資料', m.tcGrade === '未評' && '繁中未評'].filter(Boolean).join('｜'),
       data: [prefillScore, decodeScore, tcScore, jsonScore, kvEfficiency, licenseScore, ecosystemScore],
       borderColor: c.border,
       backgroundColor: c.bg,
       borderWidth: 2,
       pointBackgroundColor: c.border,
-      pointRadius: 4
+      pointRadius: 4,
+      spanGaps: true // 無資料的軸跳過，不畫成 0
     };
   });
 
@@ -1872,8 +1937,9 @@ function openModelDetailModal(modelId) {
         </div>
         <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
           <span class="text-slate-500 block text-[11px]">Arena Coding Elo</span>
-          <span class="font-bold text-emerald-400 text-sm font-mono">${model.arenaCodeElo}</span>
-          <span class="text-[10px] text-slate-400 block">HumanEval: ${model.humanEval}%</span>
+          <span class="font-bold text-emerald-400 text-sm font-mono">${fmt(model.arenaCodeElo)}</span>
+          <span class="text-[10px] text-slate-400 block">WebDev: ${fmt(model.arenaWebdevElo)}</span>
+          <span class="text-[10px] text-slate-400 block">SWE-bench V: ${fmt(model.sweBench, '%')}｜LCB: ${fmt(model.liveCodeBench)}｜HumanEval: ${fmt(model.humanEval, '%')}</span>
         </div>
         <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
           <span class="text-slate-500 block text-[11px]">繁中評級 / 最低位元</span>
@@ -1882,8 +1948,8 @@ function openModelDetailModal(modelId) {
         </div>
         <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
           <span class="text-slate-500 block text-[11px]">KV Cache 每 Token</span>
-          <span class="font-bold text-cyan-300 text-sm font-mono">${model.kvPerTokKB} KB</span>
-          <span class="text-[10px] text-slate-400 block">考卷: ${model.examScore}</span>
+          <span class="font-bold text-cyan-300 text-sm font-mono">${fmt(model.kvPerTokKB, ' KB')}</span>
+          <span class="text-[10px] text-slate-400 block">考卷: ${fmt(model.examScore)}</span>
         </div>
       </div>
 
@@ -1895,7 +1961,7 @@ function openModelDetailModal(modelId) {
         </div>
         <div>
           <h4 class="font-bold text-white mb-1">JSON 格式遵循與 Agent 紀律：</h4>
-          <p class="text-slate-300 leading-relaxed">${model.jsonNote} (評分: ${model.jsonDisciplineScore}/100)</p>
+          <p class="text-slate-300 leading-relaxed">${model.jsonNote} (評分: ${fmt(model.jsonDisciplineScore, '/100')})</p>
         </div>
         <div>
           <h4 class="font-bold text-white mb-1">推理引擎與生態支援狀態：</h4>
@@ -1904,6 +1970,11 @@ function openModelDetailModal(modelId) {
         <div>
           <h4 class="font-bold text-white mb-1">儲存建議：</h4>
           <p class="text-slate-300 leading-relaxed">${model.storageAdvise}</p>
+        </div>
+        <div>
+          <h4 class="font-bold text-white mb-1">資料來源：</h4>
+          <div class="text-[11px] leading-relaxed space-y-0.5">${sourcesHtml(model)}</div>
+          <p class="text-[10px] text-slate-500 mt-1">${model.editorial || '繁中評級、工作負載適配與 Prefill 分數為編輯評分'}，不是量測值。KV 為 BF16、只計全注意力層，依 config 推導。</p>
         </div>
       </div>
 
@@ -1980,7 +2051,15 @@ function openCompareModal() {
           </tr>
           <tr>
             <td class="p-3 font-semibold text-slate-400 bg-slate-950">Arena Coding Elo</td>
-            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono font-bold text-emerald-400 text-sm">${m.arenaCodeElo}</td>`).join('')}
+            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono font-bold text-emerald-400 text-sm">${fmt(m.arenaCodeElo)}</td>`).join('')}
+          </tr>
+          <tr>
+            <td class="p-3 font-semibold text-slate-400 bg-slate-950">Arena WebDev</td>
+            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono font-bold text-emerald-400">${fmt(m.arenaWebdevElo)}</td>`).join('')}
+          </tr>
+          <tr>
+            <td class="p-3 font-semibold text-slate-400 bg-slate-950">SWE-bench V / LiveCodeBench</td>
+            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono">${fmt(m.sweBench, '%')} / ${fmt(m.liveCodeBench)}</td>`).join('')}
           </tr>
           <tr>
             <td class="p-3 font-semibold text-slate-400 bg-slate-950">繁中評級 / 量化底線</td>
@@ -1988,11 +2067,11 @@ function openCompareModal() {
           </tr>
           <tr>
             <td class="p-3 font-semibold text-slate-400 bg-slate-950">JSON 紀律評分</td>
-            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono font-bold">${m.jsonDisciplineScore}/100</td>`).join('')}
+            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono font-bold">${fmt(m.jsonDisciplineScore, '/100')}</td>`).join('')}
           </tr>
           <tr>
             <td class="p-3 font-semibold text-slate-400 bg-slate-950">KV 成本 (每 Token)</td>
-            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono text-cyan-300 font-bold">${m.kvPerTokKB} KB</td>`).join('')}
+            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono text-cyan-300 font-bold">${fmt(m.kvPerTokKB, ' KB')}</td>`).join('')}
           </tr>
           <tr>
             <td class="p-3 font-semibold text-slate-400 bg-slate-950">商用授權條款</td>

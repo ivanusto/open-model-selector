@@ -20,12 +20,14 @@
 
 ### 2. 能跑嗎？(CanIRun.ai 算力與顯存精算模擬)
 - **WebGPU 硬體自動偵測**：點擊一鍵透過瀏覽器 WebGPU/WebGL 取得 GPU 型號與顯存估計。
-- **全系列硬體預設**：支援 NVIDIA GB10 Grace Blackwell、GH200、RTX 3060~5090、雙卡/四卡、Apple Silicon 統一記憶體（16G~512G）、AMD RX 7900 系列、Intel Arc 與純 CPU RAM。
+- **全系列硬體預設**：支援 NVIDIA GB10／DGX Spark（單機與雙機）、GB200、GH200、H200、RTX PRO 6000、RTX 3060~5090、雙卡、Apple Silicon（M5／M5 Pro／M5 Max／M5 Ultra、M6、M3 Ultra，16G~512G）、AMD Ryzen AI Max+ 395、RX 7900／9070 系列、Intel Arc 與純 CPU RAM。記憶體頻寬以原廠規格為準（2026-09-22 核對）。
 - **即時動態計算**：自訂 Context Length（2k~128k）與共存預留空間，精準計算 `模型權重 + KV Cache + CUDA 執行期`，輸出完美暢跑 / 良好運行 / 部分卸載 CPU / OOM 燈號與預估 Decode t/s。
 
 ### 3. 開放權重 Coding 天梯榜（Arena.ai 整合）
-- 彙整 DeepSeek-R1/V3、Qwen2.5-Coder、gpt-oss-120b、Ornith-35B-A3B、Llama 3.3、Codestral、Gemma 2 等主流開放模型。
-- 提供 Arena Coding Elo、HumanEval、繁中評級、JSON 紀律分、KV 每 Token 成本等指標。
+- 收錄 28 款開放權重模型：2026 年的 DeepSeek-V4.1-Flash、DeepSeek-V4-Flash／V4-Pro、Kimi-K3、GLM-5.3-Flash、MiniMax-M3、Qwen3.8-27B、Qwen3.8-Flash-Next、Qwen3.6-35B-A3B、Qwen3-Coder-Next、Gemma 4（31B、26B-A4B）、Mistral Small 4／Medium 3.5、Devstral Small 2、Llama 4 Scout、gpt-oss-120b／20b、Ornith 1.5、Muse-Glimmer，以及保留作對照的上一代模型（Qwen2.5-Coder、DeepSeek-R1／V3、Llama 3.3、Codestral、Gemma 2、Yi-Coder）。
+- 指標包含 LMArena Text Coding 分數、WebDev 分數、SWE-bench Verified、LiveCodeBench、HumanEval、繁中評級、JSON 紀律分、KV 每 Token 成本。
+- **每個數字都附來源**（LMArena、Hugging Face model card 與 config、繁中 Agent 考卷、作者 GB10 實測），查不到來源的欄位一律顯示「無資料」，不以估計值填補。KV 每 Token 成本為 BF16、只計全注意力層，依 config.json 推導。
+- 繁中評級、工作負載適配與 Prefill 分數屬於編輯評分；Day 16 以外的新模型依架構與啟用參數量套用固定規則，繁中評級標示為「未評」。
 - 支援多模型橫向 PK 矩陣（Side-by-Side Comparison）。
 
 ### 4. 儲存與 I/O 決策（SSD vs NAS）
@@ -43,7 +45,9 @@
 - 兩套主題的所有文字色對背景皆達 WCAG AA（對比 4.5:1 以上）。
 
 ### 7. 每週自動化同步（GitHub Actions 定期巡檢）
-- 內建 `sync_leaderboard.py` 與每週一 GitHub Actions 自動工作流程，定期同步更新 LMSYS Arena 最新 Coding 天梯評分。
+- 內建 `scripts/sync_leaderboard.py` 與每週一 GitHub Actions 自動工作流程，從 LMArena 官方資料集 [`lmarena-ai/leaderboard-dataset`](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset) 抓 Text Coding（style control）與 WebDev 兩榜的最新分數。
+- 以 `data.js` 每個模型的 `arenaKey`／`arenaWebdevKey` 完全比對榜上名稱，不做模糊比對；新增模型時把榜上的 `model_name` 填進這兩個欄位即可。
+- 抓取失敗或一筆都沒對到時 workflow 會失敗（紅燈），不會靜默成功。
 
 ---
 
