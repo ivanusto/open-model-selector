@@ -11,7 +11,7 @@
  */
 
 const DATA_ASOF = {
-  arena: 'text-coding 2026-10-15 / webdev 2026-10-16',
+  arena: 'text-coding 2026-10-22 / webdev 2026-10-23',
   specs: '2026-10-15'
 };
 
@@ -1012,7 +1012,7 @@ const MODELS_DATABASE = [
     nativeContext: 131072,
     arenaKey: 'gpt-oss-20b',
     arenaWebdevKey: null,
-    arenaCodeElo: 1368.4,
+    arenaCodeElo: 1368.3,
     arenaWebdevElo: null,
     humanEval: null,
     sweBench: null,
