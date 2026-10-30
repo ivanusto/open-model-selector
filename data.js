@@ -8,11 +8,14 @@
  * 資料原則：每個數字都要有來源（見各模型的 sources）；查不到就是 null，介面顯示「無資料」。
  * kvPerTokKB 為 BF16、只計全注意力層，依 HF config.json 推導（另有註明者除外）。
  * arenaCodeElo／arenaWebdevElo 由 scripts/sync_leaderboard.py 每週從 LMArena 官方資料集更新。
+ * LOCAL_BENCHMARKS 是作者單機與雙機 GB10 的實測紀錄（雙機為兩台 CX7 直連、跨機 TP=2），
+ * decode 為單一請求的生成速度，aggregate 為併發 N 路的合計吞吐；不同引擎的 token 不可直接相比。
  */
 
 const DATA_ASOF = {
   arena: 'text-coding 2026-10-28 / webdev 2026-10-28',
-  specs: '2026-10-15'
+  specs: '2026-10-31',
+  local: '2026-10-26'
 };
 
 const HARDWARE_PROFILES = [
@@ -286,7 +289,7 @@ const MODELS_DATABASE = [
     jsonRecheckPending: '社群回報新版格式紀律已改善，作者尚未重測；重測前 Agent 篩選不以 Day 15 分數淘汰',
     kvPerTokKB: 20,
     speedPrefillScore: 82,
-    speedDecodeRating: '高速（8-bit 實測 29.9 t/s）',
+    speedDecodeRating: '單機 Q8_0 29.9 t/s；雙機 GB10 TP=2 BF16 48.4、NVFP4 101.9 t/s',
     workloadFit: { prefill: 3.5, decode: 4.8, agent: 5 },
     engineSupport: 'Production Merged',
     engineNotes: '架構同 Qwen3.6-35B-A3B（qwen3_5_moe），llama.cpp、vLLM 可直接載入。',
@@ -296,15 +299,17 @@ const MODELS_DATABASE = [
     day16Role: 'Day 16 獨佔/共存雙棲：KV 成本低、MIT 授權，128GB 機器適配',
     editorial: 'tcGrade、workloadFit、speedPrefillScore 為 Day 16 作者評分',
     quantProfiles: {
-      BF16: { sizeGB: 71.9, bpw: 16.0, recSpeedGpu: '128GB 機器（峰值 120.7 GB）' },
+      BF16: { sizeGB: 71.9, bpw: 16.0, recSpeedGpu: '128GB 機器（峰值 120.7 GB）；48.4 t/s（雙機 GB10 vLLM TP=2，實測）' },
+      NVFP4: { sizeGB: 23.4, bpw: 5.2, recSpeedGpu: '101.9 t/s（雙機 GB10 vLLM TP=2，實測）' },
       Q8_0: { sizeGB: 37.8, bpw: 8.4, recSpeedGpu: '29.9 t/s（GB10，Day 16）' },
       Q4_K_M: { sizeGB: 21.7, bpw: 4.8, recSpeedGpu: '24 GB 顯卡' }
     },
     sources: {
       arena: '不在 LMArena 榜上',
       specs: 'https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B',
+      quant: 'https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-NVFP4',
       benchmarks: 'https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B（SWE-bench Verified）',
-      local: 'https://github.com/ivanusto/llm-zhtw-agent-exam/blob/main/results/day15.md；https://ithelp.ithome.com.tw/articles/10405898'
+      local: 'https://github.com/ivanusto/llm-zhtw-agent-exam/blob/main/results/day15.md；https://ithelp.ithome.com.tw/articles/10405898；作者雙機 GB10 實測（2026-08-21）'
     }
   },
   {
@@ -343,6 +348,7 @@ const MODELS_DATABASE = [
     editorial: 'tcGrade、workloadFit、speedPrefillScore 為 Day 16 作者評分',
     quantProfiles: {
       BF16: { sizeGB: 55.6, bpw: 16.0, recSpeedGpu: '4.66 t/s（GB10 llama.cpp）' },
+      FP8: { sizeGB: 30.9, bpw: 8.9, recSpeedGpu: '單機 8.08、雙機 TP=2 14.80 t/s（GB10 vLLM，實測）' },
       Q8_0: { sizeGB: 29.0, bpw: 8.4, recSpeedGpu: '7.93 t/s（GB10 llama.cpp，Day 12）' },
       Q4_K_M: { sizeGB: 16.5, bpw: 4.8, recSpeedGpu: '11.77 t/s（GB10 llama.cpp，Day 12）' }
     },
@@ -351,7 +357,7 @@ const MODELS_DATABASE = [
       specs: 'https://huggingface.co/Qwen/Qwen3.8-27B',
       benchmarks: 'https://huggingface.co/Qwen/Qwen3.8-27B（LiveCodeBench v6）',
       quant: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF',
-      local: 'https://github.com/ivanusto/llm-zhtw-agent-exam/blob/main/results/day15.md；Day 12 量化實測'
+      local: 'https://github.com/ivanusto/llm-zhtw-agent-exam/blob/main/results/day15.md；Day 12 量化實測；作者雙機 GB10 實測（2026-08-18）'
     }
   },
   {
@@ -651,22 +657,22 @@ const MODELS_DATABASE = [
     liveCodeBench: 91.6,
     tcGrade: '未評',
     tcQuantMinBit: '原生 FP4+FP8',
-    tcQuantNote: 'HumanEval 69.5 是 base 模型數字；SWE-bench 與 LiveCodeBench 取官方 Max 檔位。本機雙機 GB10（vLLM TP=2、DSpark 投機解碼）典型 decode 約 40 t/s，16K 與 49K token 針取回正確。',
-    jsonDisciplineScore: null,
-    jsonNote: '工具呼叫 finish_reason 正確；未跑繁中 Agent 考卷。',
+    tcQuantNote: 'HumanEval 69.5 是 base 模型數字；SWE-bench 與 LiveCodeBench 取官方 Max 檔位。雙機 GB10 跑官方權重（vLLM 載入為 block-FP8，KV 為 NVFP4）：繁中 PPL 14.62、英文 5.36；同一款模型的單機 2-bit GGUF 分別高 13.6% 與 37.6%，劣化幅度與基準 PPL 反相關，不是語言本身。',
+    jsonDisciplineScore: 100,
+    jsonNote: 'Day 27 雙機實測：JSON 緊湊度十輪單行 10/10（平均 51 字元），工具 schema 17/17 合法、路由 19/20。分數 = 100 × (1 − 多行輪數 / 輪數)；Day 15 為 50 輪，這裡只有 10 輪，樣本較小。單機 2-bit 版同一題單行 0/10。',
     kvPerTokKB: 5.4,
     speedPrefillScore: 84,
-    speedDecodeRating: '約 40 t/s（雙機 GB10、vLLM TP=2、DSpark 投機解碼）',
+    speedDecodeRating: '42.1 t/s 單路、併發 8 合計 94.7 t/s（雙機 GB10、vLLM TP=2、DSpark 投機解碼）',
     workloadFit: { prefill: 3.8, decode: 4.0, agent: 3.9 },
     engineSupport: 'Production Merged',
     engineNotes: '上游 vLLM 原生支援（CSA/HCA 混合注意力）；ds4 引擎有專用 GGUF。',
     storageAdvise: '原生權重約 160 GB，單台 128GB 放不下，需雙機或 256GB 以上。',
-    examScore: null,
+    examScore: '繁中 20/20・工具 10/10・多步 3/3（雙機官方權重，Day 27）',
     isDay16Featured: false,
     day16Role: 'Day 17 ds4 與 Day 27 雙機篇的主力模型',
     editorial: 'workloadFit、speedPrefillScore 依規則產生（架構與啟用參數量）；tcGrade 未評',
     quantProfiles: {
-      'FP4+FP8': { sizeGB: 159.6, bpw: 4.4, recSpeedGpu: '約 40 t/s（雙機 GB10 vLLM TP=2）' },
+      'FP4+FP8': { sizeGB: 159.6, bpw: 4.4, recSpeedGpu: '42.1 t/s（雙機 GB10 vLLM TP=2，實測）' },
       'UD-Q4_K_XL': { sizeGB: 155.1, bpw: 4.3, recSpeedGpu: '256 GB 以上' }
     },
     sources: {
@@ -674,7 +680,7 @@ const MODELS_DATABASE = [
       specs: 'https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash',
       benchmarks: 'https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash（model card 評測表）',
       quant: 'https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF',
-      local: '作者雙機 GB10 實測（2026-09-02）；KV 為依 config 粗估'
+      local: '作者雙機 GB10 實測（2026-09-02、2026-09-08 Day 27）；KV 為依 config 粗估'
     }
   },
   {
@@ -726,7 +732,7 @@ const MODELS_DATABASE = [
   },
   {
     id: 'deepseek-v41-flash',
-    name: 'DeepSeek-V4.1-Flash (MoE 552B + Engram / Active 16B)',
+    name: 'DeepSeek-V4.1-Flash 0910 (MoE 552B + Engram / Active 16B)',
     family: 'DeepSeek',
     paramsTotal: 763.2,
     paramsActive: 16.0,
@@ -743,32 +749,32 @@ const MODELS_DATABASE = [
     sweBench: null,
     liveCodeBench: null,
     tcGrade: '未評',
-    tcQuantMinBit: '2.9 bpw 以上（2.0 bpw 長對話會亂）',
-    tcQuantNote: '總參數 763B = 552B 主幹 + 196B Engram 條件記憶；decode 啟用 16B、prefill 8B。本機雙機 GB10 實測：EXL3 2.0bpw 在上下文約 55K 以後語無倫次，換 MiaAI 2.9bpw 後長任務正常；2.9bpw 與 ds4 Q2 在 79K~82K 繁中長文皆無簡體字。',
+    tcQuantMinBit: '2.9 bpw 以上（舊版 2.0 bpw 長對話會亂）',
+    tcQuantNote: '總參數 763B = 552B 主幹 + 196B Engram 條件記憶；decode 啟用 16B、prefill 8B。本機雙機 GB10 實測：EXL3 2.0bpw 在上下文約 55K 以後語無倫次，換 MiaAI 2.9bpw 後長任務正常；2.9bpw 與 ds4 Q2 在 79K~82K 繁中長文皆無簡體字。之後的 sfxnz Viterbi 2.0bpw 改良版合成長對話（對話 6 萬到 11.7 萬字）12 次簡體 0。',
     jsonDisciplineScore: null,
     jsonNote: '工具呼叫與回填正確、14.9K 與 45.5K token 針取回正確；未跑繁中 Agent 考卷。ds4 下思考預設開啟，關閉要送 think:false。',
     kvPerTokKB: 0.87,
     speedPrefillScore: 84,
-    speedDecodeRating: '26.0 t/s（雙機 GB10、vLLM EXL3 2.9bpw、DSpark k=3、temperature 0）',
+    speedDecodeRating: '單路 41~48 t/s、雙路合計 65~71（雙機 GB10、vLLM、sfxnz EXL3 2.0bpw Viterbi）；MiaAI 2.9bpw 26.0、ds4 Q2 21.4',
     workloadFit: { prefill: 3.8, decode: 4.0, agent: 3.9 },
     engineSupport: 'Experimental (Community Recipe)',
-    engineNotes: 'llama.cpp 主線跑不動；可行路線是社群 vLLM EXL3 配方（MiaAI-Lab）或 ds4 引擎的 Q2 GGUF。雙機載入 EXL3 約 75 分鐘，ds4 只要 2 分鐘但最多 2 個 session。',
+    engineNotes: 'llama.cpp 主線跑不動；可行路線是社群 vLLM EXL3 配方（MiaAI-Lab、sfxnz）或 ds4 引擎的 Q2 GGUF。雙機載入 MiaAI EXL3 約 75 分鐘、sfxnz Viterbi 約 9 分鐘，ds4 只要 2 分鐘但最多 2 個 session。10-17 的新權重見 DeepSeek-V4.1-Flash-1017。',
     storageAdvise: '原生 510 GB；EXL3 2.9bpw 約 196 GiB、ds4 Q2 約 366 GB，至少要雙機 GB10 或 512GB 等級機器。',
     examScore: null,
     isDay16Featured: false,
-    day16Role: '2026-09 最新 DeepSeek：Engram 條件記憶與 CSA2 稀疏注意力，KV 成本只有 V4-Flash 的約 1/4',
+    day16Role: '2026-09 的 DeepSeek：Engram 條件記憶與 CSA2 稀疏注意力，KV 成本只有 V4-Flash 的約 1/4',
     editorial: 'workloadFit、speedPrefillScore 依規則產生（架構與啟用參數量）；tcGrade 未評',
     quantProfiles: {
       'FP8+FP4': { sizeGB: 510.3, bpw: 5.3, recSpeedGpu: '多卡資料中心' },
       'Q2 (ds4)': { sizeGB: 365.7, bpw: 3.8, recSpeedGpu: '21.4 t/s 單路（雙機 GB10 ds4 RDMA TP、think:false、temperature 0）' },
-      'EXL3 2.9bpw': { sizeGB: 210.4, bpw: 2.2, recSpeedGpu: '26.0 t/s（雙機 GB10 vLLM、DSpark k=3、temperature 0）' }
+      'EXL3 2.9bpw': { sizeGB: 210.4, bpw: 2.9, recSpeedGpu: '26.0 t/s（雙機 GB10 vLLM、DSpark k=3、temperature 0）' }
     },
     sources: {
       arena: 'https://arena.ai/leaderboard/text/coding；https://arena.ai/leaderboard/code/webdev',
       specs: 'https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash',
       benchmarks: 'https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash（HumanEval 為 base 模型）',
       quant: 'https://huggingface.co/antirez/deepseek-v4.1-flash-gguf',
-      local: '作者雙機 GB10 實測（2026-09-13 至 09-16）；KV 取自 model card 的 890 bytes/token（FP4 主 KV）'
+      local: '作者雙機 GB10 實測（2026-09-13 至 09-28）；KV 取自 model card 的 890 bytes/token（FP4 主 KV）'
     }
   },
   {
@@ -1113,23 +1119,25 @@ const MODELS_DATABASE = [
     jsonNote: '未在繁中 Agent 考卷上實測。',
     kvPerTokKB: 22.5,
     speedPrefillScore: 84,
-    speedDecodeRating: '未實測（啟用 6.5B）',
+    speedDecodeRating: '49.1 t/s（雙機 GB10、vLLM TP=2、官方 FP8 權重）',
     workloadFit: { prefill: 3.8, decode: 4.5, agent: 4.2 },
     engineSupport: 'Production Merged',
-    engineNotes: 'unsloth 已發布 GGUF；vLLM 支援。',
+    engineNotes: 'unsloth 已發布 GGUF；vLLM 支援。官方 repo 同時放 HF 與 Mistral 原生兩套 safetensors，下載量是模型大小的兩倍，vLLM 只讀 HF 那套。',
     storageAdvise: 'Q4 約 74 GB，128GB 機器可共存。',
     examScore: null,
     isDay16Featured: false,
     day16Role: '128GB 機器的 Apache 授權 MoE 選項',
     editorial: 'workloadFit、speedPrefillScore 依規則產生（架構與啟用參數量）；tcGrade 未評',
     quantProfiles: {
+      FP8: { sizeGB: 120.9, bpw: 8.1, recSpeedGpu: '49.1 t/s（雙機 GB10 vLLM TP=2，實測）' },
       Q8_0: { sizeGB: 126.5, bpw: 8.5, recSpeedGpu: '192 GB 以上' },
       Q4_K_M: { sizeGB: 73.8, bpw: 5.0, recSpeedGpu: '96~128 GB' }
     },
     sources: {
       arena: '不在 LMArena coding 榜上',
       specs: 'https://huggingface.co/mistralai/Mistral-Small-4-119B-2603',
-      quant: 'https://huggingface.co/unsloth/Mistral-Small-4-119B-2603-GGUF'
+      quant: 'https://huggingface.co/unsloth/Mistral-Small-4-119B-2603-GGUF',
+      local: '作者雙機 GB10 實測（2026-08-18）：14K 與 41K token 針取回正確、工具呼叫正確'
     }
   },
   {
@@ -1401,7 +1409,7 @@ const MODELS_DATABASE = [
       specs: 'https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16',
       benchmarks: 'https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16（LiveCodeBench v5）',
       quant: 'https://huggingface.co/unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF',
-      local: 'https://www.exxactcorp.com/blog/benchmarks/benchmarking-local-ai-agents-on-nvidia-dgx-spark（第三方）'
+      localThirdParty: 'https://www.exxactcorp.com/blog/benchmarks/benchmarking-local-ai-agents-on-nvidia-dgx-spark'
     }
   },
   {
@@ -1586,6 +1594,319 @@ const MODELS_DATABASE = [
       specs: 'https://huggingface.co/zai-org/GLM-5.3',
       quant: 'https://huggingface.co/unsloth/GLM-5.3-GGUF'
     }
+  },
+  {
+    id: 'deepseek-v41-flash-1017',
+    name: 'DeepSeek-V4.1-Flash-1017 (MoE 552B + Engram / Active 16B)',
+    family: 'DeepSeek',
+    paramsTotal: 763.2,
+    paramsActive: 16.0,
+    architecture: 'MoE',
+    license: 'MIT',
+    commercialAllowed: true,
+    contextWindow: 1048576,
+    nativeContext: 1048576,
+    arenaKey: null,
+    arenaWebdevKey: 'DeepSeek-V4.1-Flash-20261017 (Max)',
+    arenaCodeElo: null,
+    arenaWebdevElo: 1665.0,
+    humanEval: null,
+    sweBench: null,
+    liveCodeBench: null,
+    tcGrade: '未評',
+    tcQuantMinBit: '2.8 bpw 以上（EXL3）',
+    tcQuantNote: '10-17 發布的新權重，config 與 0910 版完全相同，強化 agent 能力（官方表：Terminal-Bench 4.0 42.3 對 31.2、DeepSWE v1.1 77.0 對 74.2）。雙機 GB10 實測兩個社群 EXL3 配方：繁中考卷 v2 繁中 20/20、簡體洩漏 0；3.9 萬 token 長對話簡體字 0；4 路 30 分鐘壓測偶有單字簡體（每請求最多 4 字）。',
+    jsonDisciplineScore: null,
+    jsonNote: '工具 6/6（含強制 tool_choice）、考卷 v2 工具 10/10、agent 3/3；考卷 v2 沒有 Day 15 的 JSON 緊湊度題，所以紀律分仍是無資料。',
+    kvPerTokKB: 0.87,
+    speedPrefillScore: 84,
+    speedDecodeRating: '單路約 56 t/s、4 路合計 118 t/s、程式碼 108 t/s（雙機 GB10、TensorFold Zig、EXL3 2.8bpw）',
+    workloadFit: { prefill: 3.8, decode: 4.0, agent: 3.9 },
+    engineSupport: 'Experimental (Community Recipe)',
+    engineNotes: 'llama.cpp 與 vLLM 主線都跑不動；可行路線是 TensorFold（EXL3 專用引擎，Python 版與 Zig 版）加社群 EXL3 權重，跨兩台 GB10 做 TP=2。rank cache 建好後約 40 到 60 秒可服務。',
+    storageAdvise: '原生 510 GB；EXL3 2.8bpw 約 204 GB、2.9bpw 約 211 GB，兩台 GB10 各放一份，每台另需約 96 GB 的 rank cache。',
+    examScore: '繁中 20/20・簡體洩漏 0・工具 10/10・agent 3/3（考卷 v2，4 輪中位數）',
+    isDay16Featured: false,
+    day16Role: '2026-10 最新 DeepSeek：同架構換權重，WebDev 榜比 0910 版高約 46 分',
+    editorial: 'workloadFit、speedPrefillScore 依規則產生（架構與啟用參數量）；tcGrade 未評',
+    quantProfiles: {
+      'FP8+FP4': { sizeGB: 510.3, bpw: 5.3, recSpeedGpu: '多卡資料中心' },
+      'EXL3 2.9bpw': { sizeGB: 210.8, bpw: 2.9, recSpeedGpu: '57.1 t/s 單路（雙機 GB10 TensorFold Python，實測）' },
+      'EXL3 2.8bpw': { sizeGB: 203.8, bpw: 2.8, recSpeedGpu: '56.1 t/s 單路（雙機 GB10 TensorFold Zig，實測）' }
+    },
+    sources: {
+      arena: 'https://arena.ai/leaderboard/code/webdev（不在 Text coding 榜上）',
+      specs: 'https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017',
+      benchmarks: 'https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017（model card 評測表，未列 HumanEval／SWE-bench Verified／LiveCodeBench）',
+      quant: 'https://huggingface.co/jayleaton/DeepSeek-V4.1-Flash-1017-EXL3-2.8bpw；https://huggingface.co/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw',
+      local: '作者雙機 GB10 實測（2026-10-18 至 10-26）；KV 同 0910 版（config 相同）'
+    }
+  },
+  {
+    id: 'flint',
+    name: 'Flint (MoE 39.8B / Active 2.5B)',
+    family: 'Flint',
+    paramsTotal: 39.8,
+    paramsActive: 2.5,
+    architecture: 'MoE',
+    license: 'Apache 2.0',
+    commercialAllowed: true,
+    contextWindow: 262144,
+    nativeContext: 262144,
+    arenaKey: null,
+    arenaWebdevKey: null,
+    arenaCodeElo: null,
+    arenaWebdevElo: null,
+    humanEval: null,
+    sweBench: 74.2,
+    liveCodeBench: null,
+    tcGrade: '未評',
+    tcQuantMinBit: '8-bit 起步（繁中通則）',
+    tcQuantNote: '49 層裡 35 層是 513 token 滑動窗，只有 14 層全注意力，KV 約 28 KB/token；啟用 2.5B，decode 頻寬需求接近 Ornith 1.5 35B。',
+    jsonDisciplineScore: null,
+    jsonNote: '未在繁中 Agent 考卷上實測。',
+    kvPerTokKB: 28.0,
+    speedPrefillScore: 84,
+    speedDecodeRating: '未實測（啟用 2.5B）',
+    workloadFit: { prefill: 3.8, decode: 4.8, agent: 4.3 },
+    engineSupport: 'Production Merged',
+    engineNotes: 'unsloth 與 bartowski 已發布 GGUF；新架構（FlintForCausalLM），上線前先確認你用的引擎版本已支援。',
+    storageAdvise: 'BF16 約 80 GB，128GB 機器可獨佔；Q8_0 約 42 GB、Q4_K_M 約 25 GB 可共存。',
+    examScore: null,
+    isDay16Featured: false,
+    day16Role: '2026-10 新的小啟用量 MoE：Apache 授權，SWE-bench Verified 74.2',
+    editorial: 'workloadFit、speedPrefillScore 依規則產生（架構與啟用參數量）；tcGrade 未評',
+    quantProfiles: {
+      BF16: { sizeGB: 79.6, bpw: 16.0, recSpeedGpu: '96~128 GB' },
+      Q8_0: { sizeGB: 42.3, bpw: 8.5, recSpeedGpu: '48~64 GB' },
+      Q4_K_M: { sizeGB: 25.3, bpw: 5.1, recSpeedGpu: '32 GB 顯卡' },
+      'UD-Q2_K_XL': { sizeGB: 13.6, bpw: 2.7, recSpeedGpu: '16 GB 顯卡' }
+    },
+    sources: {
+      arena: '不在 LMArena 榜上',
+      specs: 'https://huggingface.co/RecursiveSI/flint',
+      benchmarks: 'https://huggingface.co/RecursiveSI/flint（SWE-bench Verified，mini-swe-agent，5 輪以上平均）',
+      quant: 'https://huggingface.co/unsloth/flint-GGUF；https://huggingface.co/bartowski/RecursiveSI_flint-GGUF'
+    }
+  },
+  {
+    id: 'nanbeige43-33b',
+    name: 'Nanbeige4.3-33B (Dense 33B)',
+    family: 'Nanbeige',
+    paramsTotal: 33.1,
+    paramsActive: 33.1,
+    architecture: 'Dense',
+    license: 'Apache 2.0',
+    commercialAllowed: true,
+    contextWindow: 524288,
+    nativeContext: 524288,
+    arenaKey: null,
+    arenaWebdevKey: null,
+    arenaCodeElo: null,
+    arenaWebdevElo: null,
+    humanEval: null,
+    sweBench: null,
+    liveCodeBench: null,
+    tcGrade: '未評',
+    tcQuantMinBit: '8-bit 起步（繁中通則）',
+    tcQuantNote: 'Llama 架構的密集 33B，52 層全注意力（GQA 8 組），KV 約 208 KB/token，長上下文很吃記憶體。官方評測為思考模式：Terminal-Bench 2.1 80.9、SWE-Bench Pro 60.3，未列 SWE-bench Verified。',
+    jsonDisciplineScore: null,
+    jsonNote: '未在繁中 Agent 考卷上實測。',
+    kvPerTokKB: 208.0,
+    speedPrefillScore: 92,
+    speedDecodeRating: '未實測（密集 33B）',
+    workloadFit: { prefill: 4.5, decode: 3.0, agent: 3.8 },
+    engineSupport: 'Production Merged',
+    engineNotes: '標準 LlamaForCausalLM，llama.cpp、vLLM 直接載入；bartowski 已發布 GGUF。',
+    storageAdvise: 'BF16 約 66 GB；Q8_0 約 35 GB、Q4_K_M 約 21 GB。KV 每 token 208 KB，128K 上下文就要約 26 GB。',
+    examScore: null,
+    isDay16Featured: false,
+    day16Role: '2026-10 新的密集 33B：Apache 授權、512K 上下文，prefill 型任務的候選',
+    editorial: 'workloadFit、speedPrefillScore 依規則產生（架構與啟用參數量）；tcGrade 未評',
+    quantProfiles: {
+      BF16: { sizeGB: 66.2, bpw: 16.0, recSpeedGpu: '96~128 GB' },
+      Q8_0: { sizeGB: 35.2, bpw: 8.5, recSpeedGpu: '48 GB 以上' },
+      Q4_K_M: { sizeGB: 20.8, bpw: 5.0, recSpeedGpu: '24 GB 顯卡' }
+    },
+    sources: {
+      arena: '不在 LMArena 榜上',
+      specs: 'https://huggingface.co/Nanbeige/Nanbeige4.3-33B',
+      benchmarks: 'https://huggingface.co/Nanbeige/Nanbeige4.3-33B（思考模式，preserve_thinking=true）',
+      quant: 'https://huggingface.co/bartowski/Nanbeige_Nanbeige4.3-33B-GGUF'
+    }
+  },
+  {
+    id: 'ornith-15-122b',
+    name: 'Ornith 1.5 122B (MoE 122B / Active 約 9B)',
+    family: 'Ornith',
+    paramsTotal: 122.1,
+    paramsActive: 9.0,
+    architecture: 'MoE',
+    license: 'MIT',
+    commercialAllowed: true,
+    contextWindow: 262144,
+    nativeContext: 262144,
+    arenaKey: null,
+    arenaWebdevKey: null,
+    arenaCodeElo: null,
+    arenaWebdevElo: null,
+    humanEval: null,
+    sweBench: 84.5,
+    liveCodeBench: null,
+    tcGrade: '未評',
+    tcQuantMinBit: '8-bit 起步（繁中通則）',
+    tcQuantNote: '與 Ornith 1.5 35B 同架構（qwen3_5_moe，每 4 層 1 層全注意力），KV 約 24 KB/token。官方未公布啟用參數，9.0B 是依 safetensors 標頭推算（256 專家取 8，不含 embedding、視覺塔與 MTP；同法算 35B 版為 2.95B，官方標 3B）。',
+    jsonDisciplineScore: null,
+    jsonNote: '未在繁中 Agent 考卷上實測；35B 版 Day 15 的 JSON 緊湊度偏弱，可作參考。',
+    kvPerTokKB: 24.0,
+    speedPrefillScore: 84,
+    speedDecodeRating: '未實測（啟用約 9B）',
+    workloadFit: { prefill: 3.8, decode: 4.5, agent: 4.2 },
+    engineSupport: 'Production Merged',
+    engineNotes: '架構同 Ornith 1.5 35B，llama.cpp、vLLM 可直接載入；官方另有 FP8 與 NVFP4 版，unsloth 已發布 GGUF。',
+    storageAdvise: 'BF16 約 250 GB；官方 NVFP4 約 78 GB 與 UD-Q4_K_XL 約 80 GB 放得進 128GB 機器，FP8 約 133 GB 要雙機 GB10。',
+    examScore: null,
+    isDay16Featured: false,
+    day16Role: '2026-10 Ornith 大版本：MIT 授權，SWE-bench Verified 84.5',
+    editorial: 'workloadFit、speedPrefillScore 依規則產生（架構與啟用參數量）；tcGrade 未評',
+    quantProfiles: {
+      BF16: { sizeGB: 250.2, bpw: 16.0, recSpeedGpu: '256 GB 以上' },
+      FP8: { sizeGB: 132.9, bpw: 8.7, recSpeedGpu: '雙機 GB10 / 192 GB 以上' },
+      Q8_0: { sizeGB: 132.6, bpw: 8.7, recSpeedGpu: '192 GB 以上' },
+      NVFP4: { sizeGB: 77.6, bpw: 5.1, recSpeedGpu: '96~128 GB' },
+      'UD-Q4_K_XL': { sizeGB: 79.7, bpw: 5.2, recSpeedGpu: '96~128 GB' },
+      'UD-Q2_K_XL': { sizeGB: 44.5, bpw: 2.9, recSpeedGpu: '48~64 GB' }
+    },
+    sources: {
+      arena: '不在 LMArena 榜上',
+      specs: 'https://huggingface.co/ornith-ai/Ornith-1.5-122B',
+      benchmarks: 'https://huggingface.co/ornith-ai/Ornith-1.5-122B（SWE-bench Verified，OpenHands）',
+      quant: 'https://huggingface.co/ornith-ai/Ornith-1.5-122B-NVFP4；https://huggingface.co/ornith-ai/Ornith-1.5-122B-FP8；https://huggingface.co/unsloth/Ornith-1.5-122B-GGUF'
+    }
+  }
+];
+
+// 作者單機與雙機 GB10 實測（2026-08 至 10）。decode 是單一請求的生成速度（tok/s），
+// aggregate 是 N 路併發的合計吞吐，prefill 是提示處理速度。quantKey 對到該模型的 quantProfiles；
+// 沒有對應檔位的寫 null，改看 weights。數字取自當次報告的中位數或代表值，不同引擎的 token 不可直接相比。
+const LOCAL_BENCHMARKS = [
+  // ---------- 雙機 GB10（CX7 直連、跨機 TP=2） ----------
+  {
+    id: 'dual-qwen38-27b-fp8', modelId: 'qwen38-27b-dense', quantKey: 'FP8', date: '2026-08-18',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'vLLM 0.26.1', weights: 'Qwen/Qwen3.8-27B-FP8',
+    decode: 14.80, aggregate: null, prefill: null,
+    quality: [],
+    notes: '同一套腳本：單機 TP=1 8.08、跨機 PP=2 8.25、跨機 TP=2 14.80 t/s。decode 受記憶體頻寬限制，TP 把權重拆兩半才是加速來源，PP 同時只有一台在算。',
+    source: '作者雙機 GB10 實測（2026-08-18）'
+  },
+  {
+    id: 'dual-mistral-small-4-fp8', modelId: 'mistral-small-4', quantKey: 'FP8', date: '2026-08-18',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'vLLM 0.26.1', weights: 'mistralai/Mistral-Small-4-119B-2603（官方 FP8）',
+    decode: 49.09, aggregate: null, prefill: null,
+    quality: ['14K、41K token 針取回正確', '工具呼叫正確'],
+    notes: '每 token 搬約 6.5 GB 權重、36 層；KV 池約 171 萬 token。',
+    source: '作者雙機 GB10 實測（2026-08-18）'
+  },
+  {
+    id: 'dual-ornith-35b-bf16', modelId: 'ornith-35b-a3b', quantKey: 'BF16', date: '2026-08-21',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'vLLM 0.26.1', weights: 'ornith-ai/Ornith-1.5-35B-A3B',
+    decode: 48.41, aggregate: { 4: 116.3, 8: 199.1, 16: 268.2, 32: 412.0 }, prefill: { tokPerSec: 2767, promptTokens: 12001 },
+    quality: ['長窗多針 32K 到 200K 共 20/20', 'AIME 最難 8 題 4/8（失敗全是截斷，零答錯）', '工具 schema 18/18 合法、路由 19/20'],
+    notes: 'KV 池約 634 萬 token。',
+    source: '作者雙機 GB10 實測（2026-08-21）'
+  },
+  {
+    id: 'dual-ornith-35b-nvfp4', modelId: 'ornith-35b-a3b', quantKey: 'NVFP4', date: '2026-08-21',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'vLLM 0.26.1', weights: 'ornith-ai/Ornith-1.5-35B-A3B-NVFP4',
+    decode: 101.86, aggregate: { 4: 262.5, 8: 417.5, 16: 613.9, 32: 861.9 }, prefill: { tokPerSec: 4141, promptTokens: 12001 },
+    quality: ['長窗多針 32K 到 200K 共 20/20', 'AIME 最難 8 題 6/8（失敗全是截斷，零答錯）', '工具 schema 18/18 合法、路由 19/20'],
+    notes: '混合精度：MoE 專家與 lm_head 是 NVFP4，注意力投影是 FP8，KV 也是 FP8。GB10 沒有原生 FP4 算力，走 W4A16，省的是頻寬，所以 decode 是 BF16 的 2.1 倍、prefill 只快 1.5 倍。併發 8 時每人 52.2 t/s，比 BF16 一個人獨佔還快。',
+    source: '作者雙機 GB10 實測（2026-08-21）'
+  },
+  {
+    id: 'dual-dsv4-flash', modelId: 'deepseek-v4-flash', quantKey: 'FP4+FP8', date: '2026-09-08',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'vLLM（MiaAI-Lab 配方）＋DSpark 投機解碼', weights: 'deepseek-ai/DeepSeek-V4-Flash（0731 官方權重，KV 為 NVFP4）',
+    decode: 42.14, aggregate: { 8: 94.72 }, prefill: { tokPerSec: 1817, promptTokens: 8192 },
+    quality: ['考卷：繁中 20/20、工具 10/10、多步 agent 3/3', 'JSON 緊湊度單行 10/10', '工具 schema 17/17 合法、路由 19/20', '繁中 PPL 14.62、英文 PPL 5.36'],
+    notes: '投機解碼接受率 35.8%，單路 decode 離散度 28%，看數字要看中位數。同一款模型的單機 2-bit GGUF（ds4-server）只有 17.24 t/s，JSON 單行 0/10。載入約 39 分鐘。',
+    source: '作者雙機 GB10 實測（2026-09-08，Day 27）'
+  },
+  {
+    id: 'dual-dsv41-ds4-q2', modelId: 'deepseek-v41-flash', quantKey: 'Q2 (ds4)', date: '2026-09-16',
+    platform: 'dual-gb10', topology: '跨機 TP=2（RDMA）', engine: 'ds4（antirez）', weights: 'antirez/deepseek-v4.1-flash-gguf Q2',
+    decode: 21.4, aggregate: null, prefill: { tokPerSec: 220, promptTokens: 7813 },
+    quality: ['14.9K、45.5K token 針取回正確', '82K token 繁中長文簡體 0', '工具呼叫與回填正確'],
+    notes: '併發 1、2、5、8 的合計吞吐都在 20.3 到 21.1 t/s。記憶體預算只容得下 2 個 session，兩路是輪流算，併發 3 以上只能排隊；TP 下 prefix cache 等於沒有。載入只要約 2 分鐘。',
+    source: '作者雙機 GB10 實測（2026-09-16）'
+  },
+  {
+    id: 'dual-dsv41-mia-exl3-29', modelId: 'deepseek-v41-flash', quantKey: 'EXL3 2.9bpw', date: '2026-09',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'vLLM（MiaAI-Lab EXL3 配方）＋DSpark', weights: 'MiaAI-Lab EXL3 2.9bpw',
+    decode: 26.0, aggregate: null, prefill: null,
+    quality: ['79K token 繁中長文簡體 0'],
+    notes: '載入 75 到 90 分鐘。',
+    source: '作者雙機 GB10 實測（2026-09）'
+  },
+  {
+    id: 'dual-dsv41-sfxnz-viterbi', modelId: 'deepseek-v41-flash', quantKey: null, date: '2026-09-28',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'vLLM（sfxnz EXL3 配方）＋DSpark', weights: 'sfxnz/DeepSeek-V4.1-Flash-EXL3 2.0bpw Viterbi',
+    decode: 44.0, aggregate: { 2: 68.0 }, prefill: { tokPerSec: 809, promptTokens: 32768 },
+    quality: ['合成長對話 12 次簡體 0', '對原始權重的 KL：Agent 0.031、程式碼 0.086、一般文字 0.156'],
+    notes: '單路 41 到 48 t/s、雙路合計 65 到 71，取代表值。載入約 9 分鐘。換 200GbE 雙埠後速度不變，瓶頸在算力不在網路。',
+    source: '作者雙機 GB10 實測（2026-09-28 至 10-04）'
+  },
+  {
+    id: 'dual-dsv41-1017-tf-python', modelId: 'deepseek-v41-flash-1017', quantKey: 'EXL3 2.9bpw', date: '2026-10-26',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'TensorFold dsv41-1.1.1（Python）', weights: 'LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw',
+    decode: 57.1, aggregate: { 2: 81.0, 4: 112.3 }, prefill: { tokPerSec: 1874, promptTokens: 8192 },
+    quality: ['針取回 3 萬到 8.7 萬 token 3/3', '255K 針取回失敗（記憶體不足，防護停機）', '工具 6/6', 'GSM8K 200 題 96.5%', '影像 11/11', '考卷 v2：繁中 19/20、洩漏 1、工具 10/10、agent 3/3', '4 路 30 分鐘壓測 114.0 t/s、414 請求 0 錯誤'],
+    notes: '程式碼單路 106.6 t/s（投機解碼對程式碼命中率高）。待機時主節點只剩約 3 GiB 可用記憶體。',
+    source: '作者雙機 GB10 實測（2026-10-26）'
+  },
+  {
+    id: 'dual-dsv41-1017-tf-zig', modelId: 'deepseek-v41-flash-1017', quantKey: 'EXL3 2.8bpw', date: '2026-10-26',
+    platform: 'dual-gb10', topology: '跨機 TP=2', engine: 'TensorFold Zig（dsv41-zig-dev）', weights: 'jayleaton/DeepSeek-V4.1-Flash-1017-EXL3-2.8bpw',
+    decode: 56.1, aggregate: { 2: 86.5, 4: 117.8 }, prefill: { tokPerSec: 2129, promptTokens: 8192 },
+    quality: ['針取回 3 萬到 8.7 萬 token 3/3', '255K 針取回通過', '工具 6/6', 'GSM8K 200 題 96.0%', '影像 11/11', '考卷 v2：繁中 20/20、洩漏 0、工具 10/10、agent 3/3', '4 路 30 分鐘壓測 120.8 t/s、431 請求 0 錯誤'],
+    notes: '程式碼單路 107.9 t/s；prefill 比 Python 版快 14 到 18%，待機可用記憶體多約 4 GiB。壓測有 59/431 個請求夾帶簡體字（每請求最多 4 字）。',
+    source: '作者雙機 GB10 實測（2026-10-26）'
+  },
+  // ---------- 單機 GB10 ----------
+  {
+    id: 'gb10-qwen38-27b-fp8', modelId: 'qwen38-27b-dense', quantKey: 'FP8', date: '2026-08-15',
+    platform: 'nvidia-gb10', topology: '單機', engine: 'vLLM 0.26.1', weights: 'Qwen/Qwen3.8-27B-FP8',
+    decode: 8.08, aggregate: null, prefill: null, quality: [],
+    notes: '雙機 TP=2 對照組的基準。', source: '作者 GB10 實測（2026-08-15）'
+  },
+  {
+    id: 'gb10-qwen38-27b-gguf', modelId: 'qwen38-27b-dense', quantKey: 'Q8_0', date: '2026-08',
+    platform: 'nvidia-gb10', topology: '單機', engine: 'llama.cpp', weights: 'GGUF（Day 12）',
+    decode: 7.93, aggregate: null, prefill: null, quality: ['q8_0 繁中、英文 PPL 皆無損'],
+    notes: '同一輪：BF16 4.66、q4_k_m 11.77 t/s；q4_k_m 繁中 PPL 劣化 +0.842%、英文 +0.505%。', source: 'Day 12 量化實測'
+  },
+  {
+    id: 'gb10-gpt-oss-120b', modelId: 'gpt-oss-120b', quantKey: 'MXFP4', date: '2026-08',
+    platform: 'nvidia-gb10', topology: '單機', engine: 'llama.cpp', weights: '官方 MXFP4',
+    decode: 60.6, aggregate: null, prefill: null, quality: [],
+    notes: 'Day 16 實測。', source: 'https://ithelp.ithome.com.tw/articles/10405898'
+  },
+  {
+    id: 'gb10-ornith-35b-q8', modelId: 'ornith-35b-a3b', quantKey: 'Q8_0', date: '2026-08',
+    platform: 'nvidia-gb10', topology: '單機', engine: 'llama.cpp', weights: 'GGUF Q8_0',
+    decode: 29.9, aggregate: null, prefill: null, quality: ['Day 15 考卷 BF16：繁中 20/20、工具 10/10、多步 3/3'],
+    notes: 'BF16 峰值佔用 120.7 GB。', source: 'https://ithelp.ithome.com.tw/articles/10405898'
+  },
+  {
+    id: 'gb10-flash-next-iq4', modelId: 'flash-next-preview', quantKey: null, date: '2026-08',
+    platform: 'nvidia-gb10', topology: '單機', engine: 'llama.cpp（PR 分支）', weights: 'UD-IQ4_XS',
+    decode: 26.49, aggregate: null, prefill: null, quality: [],
+    notes: 'Day 14 實測；引擎支援仍在 PR。', source: 'https://github.com/ivanusto/llm-zhtw-agent-exam/blob/main/results/day14.md'
+  },
+  {
+    id: 'gb10-muse-glimmer-nvfp4', modelId: 'muse-glimmer-30b', quantKey: null, date: '2026-08',
+    platform: 'nvidia-gb10', topology: '單機', engine: 'vLLM', weights: 'NVFP4（約 22 GB）',
+    decode: 12.57, aggregate: null, prefill: null, quality: [],
+    notes: '無投機解碼。', source: '作者 GB10 實測'
   }
 ];
 
@@ -1620,11 +1941,11 @@ const DAY16_METHODOLOGY = {
     {
       question: '它放得進記憶體嗎？',
       yesAction: '放得進：NAS 的代價只是冷啟動多十幾秒的一次性成本。',
-      noAction: '放不進：絕不要放 NAS！每一次頁面回收再讀取都走網路，最慘案例總載入慢 3.8 倍！'
+      noAction: '放不進：別放 NAS。模型大小逼近可用記憶體時，走 NFS 的總載入慢了 3.8 倍，連名義上純 CPU 的階段都被拖慢，因為記憶體裝不下模型加上載入過程的中間副本。'
     },
     {
       question: '你的 loader 吃儲存速度嗎？',
-      yesAction: '同數量級（如 GGUF mmap 達 73%）：儲存速度直接反映在啟動時間，住本機 NVMe。',
+      yesAction: '同數量級（如 GGUF mmap 吃掉磁碟能力的 81%）：儲存速度直接反映在啟動時間，住本機 NVMe。',
       noAction: '差一個數量級（如 vLLM 僅 3%）：搬去快碟不會有感。'
     }
   ],
@@ -1643,4 +1964,5 @@ if (typeof window !== 'undefined') {
   window.MODELS_DATABASE = MODELS_DATABASE;
   window.DAY16_METHODOLOGY = DAY16_METHODOLOGY;
   window.DATA_ASOF = DATA_ASOF;
+  window.LOCAL_BENCHMARKS = LOCAL_BENCHMARKS;
 }
