@@ -4,8 +4,8 @@
 
 // Application State
 const state = {
-  activeTab: 'wizard', // 'wizard' | 'canirun' | 'leaderboard' | 'storage' | 'radar' | 'day16'
-  
+  activeTab: 'wizard', // 'wizard' | 'canirun' | 'leaderboard' | 'bench' | 'storage' | 'radar' | 'day16'
+
   // Wizard State
   wizard: {
     step: 1,
@@ -15,11 +15,10 @@ const state = {
       coexist: 'coexist',// 'dedicated' | 'coexist'
       license: 'commercial', // 'commercial' | 'any'
       ecosystem: 'production' // 'production' | 'experimental'
-    },
-    filterHistory: []
+    }
   },
 
-  // CanIRun State
+  // CanIRun State（硬體選擇全站共用）
   canirun: {
     selectedHardwareId: 'mac-128',
     contextLength: 16384, // 16k tokens
@@ -34,20 +33,21 @@ const state = {
     searchQuery: '',
     filterArch: 'all',
     filterLicense: 'all',
-    filterTcGrade: 'all',
     filterDay16Only: false,
-    sortBy: 'arenaCodeElo', // 'arenaCodeElo' | 'paramsTotal' | 'jsonDisciplineScore' | 'humanEval'
-    sortDesc: true,
-    viewMode: 'cards', // 'cards' | 'table'
+    sortBy: 'arenaCodeElo', // 由高到低
     selectedCompareIds: ['qwen25-coder-32b', 'ornith-35b-a3b', 'gpt-oss-120b']
   },
 
-  // Storage Advisor State
+  // GB10 實測分頁
+  bench: {
+    platform: 'all' // 'all' | 'dual-gb10' | 'nvidia-gb10'
+  },
+
+  // Storage Advisor State（系統記憶體跟著選定的硬體走）
   storage: {
     selectedModelId: 'qwen25-coder-32b',
     selectedQuant: 'Q8_0',
-    systemRamGB: 128,
-    loaderType: 'gguf-mmap' // 'gguf-mmap' | 'vllm' | 'ollama'
+    loaderType: 'gguf-mmap' // 'gguf-mmap' | 'vllm'
   },
 
   // Radar State
@@ -57,9 +57,18 @@ const state = {
   }
 };
 
+// CUDA / Metal 與框架執行期的基本餘裕
+const RUNTIME_HEADROOM_GB = 2.0;
+// GB10 上各引擎實測達到頻寬理論上限的比例（Day 11：vLLM 45.2%、llama-server 73.2%）
+const ENGINE_EFFICIENCY_RANGE = [0.45, 0.73];
+
 // Utilities
 function formatNumber(num) {
   return new Intl.NumberFormat('zh-TW').format(num);
+}
+
+function escapeHtml(v) {
+  return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function getHardware(id) {
@@ -76,11 +85,23 @@ function isKnown(v) {
 }
 
 function fmtContext(tokens) {
+  if (!isKnown(tokens)) return '無資料';
   return tokens >= 1000000 ? `${+(tokens / 1048576).toFixed(1)}M` : `${(tokens / 1024).toFixed(0)}k`;
 }
 
 function fmt(v, suffix = '') {
   return isKnown(v) ? `${v}${suffix}` : '<span class="text-slate-500 font-normal">無資料</span>';
+}
+
+// 「啟用 / 總量」參數字串；任一未知時顯示無資料
+function fmtParams(m, sep = ' / ') {
+  if (!isKnown(m.paramsTotal)) return fmt(null);
+  if (!isKnown(m.paramsActive) || m.paramsActive === m.paramsTotal) return `${m.paramsTotal}B`;
+  return `${m.paramsActive}B${sep}${m.paramsTotal}B`;
+}
+
+function kvCacheGB(m, contextTokens) {
+  return isKnown(m.kvPerTokKB) ? (m.kvPerTokKB * contextTokens) / (1024 * 1024) : null;
 }
 
 // 排序用：缺值以全體已知值的中位數代入，不加分也不扣分
@@ -97,27 +118,52 @@ function scoreValue(m, field) {
   return isKnown(m[field]) ? m[field] : fieldMedian(field);
 }
 
+// 依體積由小到大排的量化檔位（體積未知的排最後）
+function quantKeysBySize(m) {
+  return Object.keys(m.quantProfiles).sort((a, b) => {
+    const sa = m.quantProfiles[a].sizeGB, sb = m.quantProfiles[b].sizeGB;
+    return (isKnown(sa) ? sa : Infinity) - (isKnown(sb) ? sb : Infinity);
+  });
+}
+
 // 最小的量化檔體積（有些模型只有 EXL3 或 Q2 之類的檔）
 function minQuantSizeGB(m) {
   const sizes = Object.values(m.quantProfiles).map(q => q.sizeGB).filter(isKnown);
-  return sizes.length ? Math.min(...sizes) : 1000;
+  return sizes.length ? Math.min(...sizes) : Infinity;
 }
 
-// 依繁中需求挑量化檔：繁中優先 8-bit，否則 Q4_K_M，都沒有就取第一個
-function pickQuantKey(m, tcLang) {
-  const keys = Object.keys(m.quantProfiles);
+// 依繁中需求挑量化檔：只在放得下的檔位裡挑，繁中優先 8-bit，否則 4-bit；都沒有就取放得下的最大檔
+function pickQuantKey(m, tcLang, fits = () => true) {
+  const keys = Object.keys(m.quantProfiles).filter(fits);
+  const pool = keys.length ? keys : [quantKeysBySize(m)[0]];
   const prefs = tcLang === 'yes' ? ['Q8_0', 'FP8', 'Q6_K', 'Q4_K_M'] : ['Q4_K_M', 'MXFP4', 'NVFP4', 'Q8_0'];
-  return prefs.find(k => keys.includes(k)) || keys[0];
+  const sorted = quantKeysBySize(m).filter(k => pool.includes(k));
+  return prefs.find(k => pool.includes(k)) || sorted[sorted.length - 1];
+}
+
+// 量化檔需要的總記憶體：權重 + KV(ctx) + 執行期
+function requiredGB(m, quantKey, contextTokens) {
+  const q = m.quantProfiles[quantKey];
+  if (!q || !isKnown(q.sizeGB)) return Infinity;
+  return q.sizeGB + (kvCacheGB(m, contextTokens) || 0) + RUNTIME_HEADROOM_GB;
+}
+
+// class 必須寫成完整字串，預建的 Tailwind 才掃得到
+const BADGE_TONES = {
+  amber: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+  emerald: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+  indigo: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40',
+  cyan: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+};
+
+function badge(text, tone = 'amber') {
+  return `<span class="inline-block align-middle whitespace-nowrap shrink-0 text-[11px] px-2 py-0.5 rounded-full border font-normal ${BADGE_TONES[tone]}">${text}</span>`;
 }
 
 // 沒考過繁中 Agent 考卷的模型，在推薦卡片上明確標示
 function examBadge(m) {
-  if (!isKnown(m.jsonDisciplineScore)) {
-    return '<span class="inline-block align-middle whitespace-nowrap shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-normal">未經考卷驗證</span>';
-  }
-  if (m.jsonRecheckPending) {
-    return '<span class="inline-block align-middle whitespace-nowrap shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-normal">考卷待重測</span>';
-  }
+  if (m.jsonRecheckPending) return badge('考卷待重測');
+  if (!isKnown(m.jsonDisciplineScore)) return badge(isKnown(m.examScore) ? 'JSON 紀律未測' : '未經考卷驗證');
   return '';
 }
 
@@ -127,134 +173,161 @@ function sourcesHtml(m) {
     ['Arena', src.arena],
     ['規格', src.specs],
     ['基準', src.benchmarks],
-    ['本機實測', src.local]
+    ['量化檔', src.quant],
+    ['作者實測', src.local],
+    ['第三方實測', src.localThirdParty]
   ].filter(([, v]) => v);
   if (!items.length) return '<span class="text-slate-500">無來源紀錄</span>';
   return items.map(([k, v]) => {
-    const isUrl = /^https?:\/\//.test(v);
-    return `<span class="block"><span class="text-slate-400">${k}：</span>${isUrl ? `<a href="${v}" target="_blank" rel="noopener" class="text-emerald-400 hover:underline break-all">${v}</a>` : v}</span>`;
-  }).join('') + (src.asOf ? `<span class="block text-slate-500 mt-1">擷取日期：${src.asOf}</span>` : '');
+    const html = String(v).split('；').map(part => /^https?:\/\//.test(part)
+      ? `<a href="${escapeHtml(part.split('（')[0])}" target="_blank" rel="noopener" class="text-emerald-400 hover:underline break-all">${escapeHtml(part)}</a>`
+      : escapeHtml(part)).join('；');
+    return `<span class="block"><span class="text-slate-400">${k}：</span>${html}</span>`;
+  }).join('');
+}
+
+// 共用的硬體下拉選單
+const HARDWARE_GROUPS = [
+  ['superchip', 'AI 超級晶片 / 工作站 (Grace Blackwell & Grace Hopper)'],
+  ['apple', 'Apple Silicon (統一記憶體)'],
+  ['nvidia', 'NVIDIA 獨立顯卡 (VRAM)'],
+  ['amd|intel', 'AMD & Intel 獨立顯卡'],
+  ['enterprise', '企業級加速卡 / 專業卡'],
+  ['cpu', '純 CPU + 系統記憶體']
+];
+
+function hardwareSelectHtml(selectedId, onchange, extra = '') {
+  return `
+    <select ${extra} onchange="${onchange}(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-medium text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none">
+      ${HARDWARE_GROUPS.map(([types, label]) => `
+        <optgroup label="${label}">
+          ${window.HARDWARE_PROFILES.filter(h => types.split('|').includes(h.type)).map(h => `
+            <option value="${h.id}" ${h.id === selectedId ? 'selected' : ''}>${h.name}</option>
+          `).join('')}
+        </optgroup>
+      `).join('')}
+    </select>`;
+}
+
+// 作者實測紀錄：可依模型、平台、量化檔位篩選
+function benchmarksFor(modelId, platform, quantKey) {
+  return (window.LOCAL_BENCHMARKS || []).filter(b =>
+    b.modelId === modelId &&
+    (!platform || b.platform === platform) &&
+    (quantKey === undefined || b.quantKey === quantKey));
+}
+
+// decode 的頻寬理論上限：每生成一個 token 要把啟用參數的權重讀一次
+function decodeCeiling(m, quantKey, hw) {
+  const q = m.quantProfiles[quantKey];
+  if (!q || !isKnown(q.bpw) || !isKnown(m.paramsActive) || !isKnown(hw.memBandwidthGBs)) return null;
+  const gbPerToken = m.paramsActive * q.bpw / 8;
+  return gbPerToken > 0 ? hw.memBandwidthGBs / gbPerToken : null;
+}
+
+// 所有 render 結束後統一把 <i data-lucide> 換成 SVG
+function renderIcons(root) {
+  if (window.renderLucideIcons) window.renderLucideIcons(root);
 }
 
 // ----------------------------------------------------
 // WebGPU / WebGL Hardware Auto Detection
 // ----------------------------------------------------
-async function detectLocalHardware() {
-  const detectBtn = document.getElementById('detect-hardware-btn');
-  if (detectBtn) detectBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin inline mr-1"></i> 偵測中...`;
-
-  let info = {
-    renderer: '未知 GPU',
-    vendor: '未知',
-    estimatedVramGB: 16,
-    matchedId: 'mac-128'
-  };
-
+// WebGPU 的 adapter info 只有廠牌與架構代號，沒有型號，所以型號一律從 WebGL 的 UNMASKED_RENDERER 取
+function readGpuStrings() {
+  const info = { renderer: '', vendor: '' };
   try {
-    if (navigator.gpu) {
-      const adapter = await navigator.gpu.requestAdapter();
-      if (adapter) {
-        const adapterInfo = await (adapter.requestAdapterInfo ? adapter.requestAdapterInfo() : adapter.info);
-        if (adapterInfo) {
-          info.vendor = adapterInfo.vendor || 'WebGPU';
-          info.renderer = `${adapterInfo.vendor || ''} ${adapterInfo.architecture || adapterInfo.device || 'GPU'}`.trim();
-        }
-        // Approximate VRAM via buffer limits
-        const maxBufferSize = adapter.limits?.maxBufferSize || 0;
-        const maxStorage = adapter.limits?.maxStorageBufferBindingSize || 0;
-        const estimatedBytes = Math.max(maxBufferSize, maxStorage);
-        if (estimatedBytes > 0) {
-          // WebGPU buffers are typically 1/2 to 1/4 total VRAM in browsers
-          const roughGB = Math.round((estimatedBytes * 2) / (1024 * 1024 * 1024));
-          if (roughGB >= 4) info.estimatedVramGB = roughGB;
-        }
-      }
-    } else {
-      // WebGL Fallback
-      const canvas = document.createElement('canvas');
-      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-      if (gl) {
-        const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-        if (debugInfo) {
-          info.renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || 'WebGL GPU';
-          info.vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL) || 'WebGL Vendor';
-        }
-      }
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    if (ext) {
+      info.renderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '';
+      info.vendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) || '';
     }
   } catch (e) {
-    console.warn('Hardware detection error:', e);
+    console.warn('WebGL detection error:', e);
   }
-
-  // Best match algorithm
-  const rendererLow = info.renderer.toLowerCase();
-  if (rendererLow.includes('gb200')) {
-    info.matchedId = 'nvidia-gb200';
-  } else if (rendererLow.includes('gb10') || rendererLow.includes('grace blackwell') || rendererLow.includes('dgx spark')) {
-    info.matchedId = 'nvidia-gb10';
-  } else if (rendererLow.includes('gh200') || rendererLow.includes('grace hopper')) {
-    info.matchedId = 'nvidia-gh200';
-  } else if (rendererLow.includes('apple') || rendererLow.includes('m1') || rendererLow.includes('m2') || rendererLow.includes('m3') || rendererLow.includes('m4') || rendererLow.includes('m5')) {
-    if (rendererLow.includes('512')) info.matchedId = 'mac-512';
-    else if (rendererLow.includes('192')) info.matchedId = 'mac-192';
-    else if (rendererLow.includes('ultra') || rendererLow.includes('128')) info.matchedId = 'mac-128';
-    else if (rendererLow.includes('96')) info.matchedId = 'mac-96';
-    else if (rendererLow.includes('max') || rendererLow.includes('64')) info.matchedId = 'mac-64';
-    else if (rendererLow.includes('48')) info.matchedId = 'mac-48';
-    else if (rendererLow.includes('pro') || rendererLow.includes('36')) info.matchedId = 'mac-36';
-    else if (rendererLow.includes('24')) info.matchedId = 'mac-24';
-    else info.matchedId = 'mac-16';
-  } else if (rendererLow.includes('5090')) {
-    info.matchedId = 'rtx-5090-32';
-  } else if (rendererLow.includes('5080')) {
-    info.matchedId = 'rtx-5080-16';
-  } else if (rendererLow.includes('5070')) {
-    info.matchedId = 'rtx-5070-12';
-  } else if (rendererLow.includes('5060 ti') || rendererLow.includes('5060ti')) {
-    info.matchedId = 'rtx-5060ti-16';
-  } else if (rendererLow.includes('4090') || rendererLow.includes('3090')) {
-    info.matchedId = 'rtx-4090-24';
-  } else if (rendererLow.includes('4080')) {
-    info.matchedId = 'rtx-4080-16';
-  } else if (rendererLow.includes('4070 ti') || rendererLow.includes('4070ti')) {
-    info.matchedId = 'rtx-4070tis-16';
-  } else if (rendererLow.includes('4070')) {
-    info.matchedId = 'rtx-4070-12';
-  } else if (rendererLow.includes('4060 ti') || rendererLow.includes('4060ti')) {
-    info.matchedId = 'rtx-4060ti-16';
-  } else if (rendererLow.includes('4060') || rendererLow.includes('3060')) {
-    info.matchedId = 'rtx-3060-12';
-  } else if (rendererLow.includes('7900 xtx') || rendererLow.includes('7900xtx')) {
-    info.matchedId = 'amd-rx7900xtx';
-  } else if (rendererLow.includes('7900')) {
-    info.matchedId = 'amd-rx7900xt';
-  } else if (rendererLow.includes('7800')) {
-    info.matchedId = 'amd-rx7800xt';
-  } else if (rendererLow.includes('9070')) {
-    info.matchedId = 'amd-rx9070xt';
-  } else if (rendererLow.includes('b580')) {
-    info.matchedId = 'intel-arc-b580';
-  } else if (rendererLow.includes('arc') || rendererLow.includes('a770')) {
-    info.matchedId = 'intel-arc-a770';
-  } else if (rendererLow.includes('h100')) {
-    info.matchedId = 'nvidia-h100-80';
-  } else if (rendererLow.includes('a100')) {
-    info.matchedId = 'nvidia-a100-80';
-  }
-
-  state.canirun.detectedGpu = info;
-  state.canirun.selectedHardwareId = info.matchedId;
-
-  // Show notification
-  renderCanIRun();
-  showToast(`已偵測硬體: ${info.renderer} (自動適配為 ${getHardware(info.matchedId).name})`);
+  return info;
 }
 
+async function readWebGpuStrings() {
+  try {
+    if (!navigator.gpu) return '';
+    const adapter = await navigator.gpu.requestAdapter();
+    const ai = adapter && (adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : null));
+    return ai ? `${ai.vendor || ''} ${ai.architecture || ''} ${ai.device || ''} ${ai.description || ''}`.trim() : '';
+  } catch (e) {
+    console.warn('WebGPU detection error:', e);
+    return '';
+  }
+}
+
+// 依字串比對硬體設定檔；比對不到回傳 null，不覆寫使用者原本的選擇
+function matchHardware(text) {
+  const r = text.toLowerCase();
+  const rules = [
+    [['gb200'], 'nvidia-gb200'],
+    [['gb10', 'grace blackwell', 'dgx spark'], 'nvidia-gb10'],
+    [['gh200', 'grace hopper'], 'nvidia-gh200'],
+    [['5090'], 'rtx-5090-32'],
+    [['5080'], 'rtx-5080-16'],
+    [['5070'], 'rtx-5070-12'],
+    [['5060 ti', '5060ti'], 'rtx-5060ti-16'],
+    [['4090', '3090'], 'rtx-4090-24'],
+    [['4080'], 'rtx-4080-16'],
+    [['4070 ti', '4070ti'], 'rtx-4070tis-16'],
+    [['4070'], 'rtx-4070-12'],
+    [['4060 ti', '4060ti'], 'rtx-4060ti-16'],
+    [['4060'], 'rtx-4060-8'],
+    [['3060'], 'rtx-3060-12'],
+    [['7900 xtx', '7900xtx'], 'amd-rx7900xtx'],
+    [['7900'], 'amd-rx7900xt'],
+    [['7800'], 'amd-rx7800xt'],
+    [['9070'], 'amd-rx9070xt'],
+    [['b580'], 'intel-arc-b580'],
+    [['a770', 'arc'], 'intel-arc-a770'],
+    [['h100'], 'nvidia-h100-80'],
+    [['a100'], 'nvidia-a100-80']
+  ];
+  for (const [keys, id] of rules) {
+    if (keys.some(k => r.includes(k)) && window.HARDWARE_PROFILES.some(h => h.id === id)) return id;
+  }
+  // Apple 晶片的瀏覽器字串不含記憶體大小，只能先對到最常見的 16GB，交由使用者再調
+  if (/apple|\bm[1-6]\b/.test(r)) return 'mac-16';
+  return null;
+}
+
+async function detectLocalHardware() {
+  document.querySelectorAll('.detect-hardware-btn').forEach(btn => {
+    btn.disabled = true;
+    btn.dataset.label = btn.innerHTML;
+    btn.innerHTML = '<i data-lucide="loader-circle" class="w-4 h-4 animate-spin inline mr-1"></i> 偵測中...';
+  });
+  renderIcons();
+
+  const gl = readGpuStrings();
+  const webgpu = await readWebGpuStrings();
+  const renderer = gl.renderer || webgpu || '未知 GPU';
+  const matchedId = matchHardware(`${gl.renderer} ${gl.vendor} ${webgpu}`);
+
+  state.canirun.detectedGpu = { renderer, vendor: gl.vendor, matchedId };
+  if (matchedId) {
+    state.canirun.selectedHardwareId = matchedId;
+    showToast(`已偵測硬體：${renderer}（自動適配為 ${getHardware(matchedId).name}）`);
+  } else {
+    showToast(`偵測到 ${renderer}，但對不到預設硬體，請手動選擇`);
+  }
+  render();
+}
+
+let _toastTimer = null;
 function showToast(msg) {
   const toast = document.getElementById('app-toast');
   if (!toast) return;
-  toast.innerText = msg;
+  toast.textContent = msg;
   toast.classList.remove('opacity-0', 'translate-y-4', 'pointer-events-none');
-  setTimeout(() => {
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => {
     toast.classList.add('opacity-0', 'translate-y-4', 'pointer-events-none');
   }, 4000);
 }
@@ -262,284 +335,230 @@ function showToast(msg) {
 // ----------------------------------------------------
 // 5-Step Selection Wizard Engine (Day 16 Methodology)
 // ----------------------------------------------------
+
+// 每一步：符合 drop 條件的模型移到淘汰清單，其餘留下
+function partition(models, step, drop, reason, discarded) {
+  return models.filter(m => {
+    if (!drop(m)) return true;
+    discarded.push({ model: m, step, reason: reason(m) });
+    return false;
+  });
+}
+
+// 依 Day 16 經驗權重算出的排序分數（Agent 模式另外先比「是否考過考卷」）
+function wizardScore(m, ans, hw) {
+  let score = 0;
+  const prefill = isKnown(m.speedPrefillScore) ? m.speedPrefillScore : fieldMedian('speedPrefillScore');
+
+  // 1. Workload Alignment (Day 16 Question 1)
+  if (ans.workload === 'prefill') {
+    // Prefill：密集 27B/32B/70B 大幅加分（prefill 比 decode 快 200 倍）
+    score += prefill * 3.5;
+    if (m.architecture === 'Dense') score += 120;
+  } else if (ans.workload === 'decode') {
+    // Decode：啟用參數越小越快
+    score += m.workloadFit.decode * 60;
+    if (isKnown(m.paramsActive)) score += (100 / Math.max(1, m.paramsActive)) * 12;
+    if (m.architecture === 'MoE') score += 150;
+  } else if (ans.workload === 'agent') {
+    // Agent：JSON 紀律 + 低 KV 成本 + MoE decode；未受測者同組比較，紀律分一律不計
+    score += (isKnown(m.jsonDisciplineScore) ? m.jsonDisciplineScore : 0) * 3.0;
+    // KV 越低越好（例：Ornith 20 KB 對 Qwen3.8-27B 64 KB）；未知不加分
+    if (isKnown(m.kvPerTokKB)) score += Math.max(0, (40 - m.kvPerTokKB)) * 10;
+    score += m.workloadFit.agent * 45;
+    if (m.architecture === 'MoE') score += 100;
+  }
+
+  // 2. Hardware Memory Sizing Fit (Day 16 Question 3)
+  // 128GB 獨佔：Ornith BF16（峰值 120.7 GB）是教科書範例；共存：Ornith Q8（38 GB）或 gpt-oss MXFP4（63 GB）
+  if (hw.vramGB >= 120 && ans.coexist === 'dedicated') {
+    if (m.id === 'ornith-35b-a3b') score += 200;
+  } else if (hw.vramGB >= 120 && ans.coexist === 'coexist') {
+    if (m.id === 'ornith-35b-a3b' || m.id === 'gpt-oss-120b') score += 120;
+  }
+
+  // 3. License Score (Day 16 Question 4: MIT > Apache > Community)
+  if (m.license === 'MIT') score += 60;
+  if (m.license === 'Apache 2.0') score += 45;
+
+  // 4. Traditional Chinese Grade (Day 16 Question 2)
+  if (ans.tcLang === 'yes') {
+    const tcWeights = { 'S': 80, 'S-': 70, 'A': 60, 'A-': 55, 'B+': 30, 'B': 10 };
+    score += (tcWeights[m.tcGrade] || 0);
+  }
+
+  // 5. Day 16 empirical featured bonus
+  if (m.isDay16Featured) score += 80;
+
+  // 6. Arena Elo：權重 0.2，讓 1300~1550 的全距影響維持在 50 分左右，不壓過 Day 16 規則
+  score += (scoreValue(m, 'arenaCodeElo') - 1400) * 0.2;
+  return score;
+}
+
+// 問題三的記憶體上限：共存時扣掉保留餘裕
+function wizardMemoryBudgetGB(hw, ans) {
+  return ans.coexist === 'coexist' ? hw.vramGB - state.canirun.reserveCoexistGB : hw.vramGB;
+}
+
 function evaluateWizard() {
   const ans = state.wizard.answers;
-  let remaining = [...window.MODELS_DATABASE];
   const discarded = [];
+  let remaining = [...window.MODELS_DATABASE];
 
   // Step 1: Workload Shape Filter
   if (ans.workload === 'prefill') {
-    // Prefill: Dense models (27B/32B/70B) shine; pure MoE without dense prefill are deprioritized
-    remaining.forEach(m => {
-      if (m.workloadFit.prefill < 4.0) {
-        discarded.push({
-          model: m,
-          step: 1,
-          reason: `長輸入短輸出 (Prefill 導向)：${m.name} 為 MoE/非密集架構，Prefill 吞吐效率低於 27B/32B 密集模型。`
-        });
-      }
-    });
-    remaining = remaining.filter(m => m.workloadFit.prefill >= 4.0);
+    remaining = partition(remaining, 1, m => m.workloadFit.prefill < 4.0,
+      m => `長輸入短輸出 (Prefill 導向)：${m.name} 為 MoE/非密集架構，Prefill 吞吐效率低於 27B/32B 密集模型。`, discarded);
   } else if (ans.workload === 'decode') {
-    // Decode: MoE with low active params shine (e.g. Ornith 3B, gpt-oss 14B, DeepSeek 37B)
-    remaining.forEach(m => {
-      if (m.workloadFit.decode < 3.8 && m.architecture === 'Dense' && m.paramsTotal > 20) {
-        discarded.push({
-          model: m,
-          step: 1,
-          reason: `短輸入長輸出 (Decode 導向)：${m.name} 為 ${m.paramsTotal}B 密集模型，受頻寬天花板限制，解碼速度慢 (如 8-bit 僅 ~8 t/s)。應選啟用參數量小的 MoE。`
-        });
-      }
-    });
-    remaining = remaining.filter(m => !(m.workloadFit.decode < 3.8 && m.architecture === 'Dense' && m.paramsTotal > 20));
+    remaining = partition(remaining, 1, m => m.workloadFit.decode < 3.8 && m.architecture === 'Dense' && isKnown(m.paramsTotal) && m.paramsTotal > 20,
+      m => `短輸入長輸出 (Decode 導向)：${m.name} 為 ${m.paramsTotal}B 密集模型，受頻寬天花板限制，解碼速度慢 (如 8-bit 僅 ~8 t/s)。應選啟用參數量小的 MoE。`, discarded);
   } else if (ans.workload === 'agent') {
-    // Agent: Demands Prefill + Decode + JSON Discipline + Low KV Cache
-    remaining.forEach(m => {
-      if (isKnown(m.jsonDisciplineScore) && m.jsonDisciplineScore < 80 && !m.jsonRecheckPending) {
-        discarded.push({
-          model: m,
-          step: 1,
-          reason: `Agent 迴圈：${m.name} 的 JSON 格式遵循紀律評分僅 ${m.jsonDisciplineScore}/100，易在多輪 tool calling 產生格式廢話導致報錯。`
-        });
-      }
-    });
-    remaining = remaining.filter(m => !isKnown(m.jsonDisciplineScore) || m.jsonDisciplineScore >= 80 || m.jsonRecheckPending);
+    remaining = partition(remaining, 1, m => isKnown(m.jsonDisciplineScore) && m.jsonDisciplineScore < 80 && !m.jsonRecheckPending,
+      m => `Agent 迴圈：${m.name} 的 JSON 格式遵循紀律評分僅 ${m.jsonDisciplineScore}/100，易在多輪 tool calling 產生格式廢話導致報錯。`, discarded);
   }
 
   // Step 2: Traditional Chinese Filter
   if (ans.tcLang === 'yes') {
-    remaining.forEach(m => {
-      if (m.tcGrade === 'B-' || m.tcGrade === 'C') {
-        discarded.push({
-          model: m,
-          step: 2,
-          reason: `繁體中文語感：${m.name} 繁中評級為 ${m.tcGrade}，量化後有明顯 1.6~2x 語義折損，未達繁中生產標準。`
-        });
-      }
-    });
-    remaining = remaining.filter(m => m.tcGrade !== 'B-' && m.tcGrade !== 'C');
+    remaining = partition(remaining, 2, m => m.tcGrade === 'B-' || m.tcGrade === 'C',
+      m => `繁體中文語感：${m.name} 繁中評級為 ${m.tcGrade}，量化後有明顯 1.6~2x 語義折損，未達繁中生產標準。`, discarded);
   }
 
-  // Step 3: Memory & Coexistence Filter (based on current hardware in CanIRun)
+  // Step 3: Memory & Coexistence Filter：最小量化檔 + KV(ctx) + 執行期 要放得進預算
   const hw = getHardware(state.canirun.selectedHardwareId);
-  const maxAllowableGB = ans.coexist === 'coexist' ? (hw.vramGB - state.canirun.reserveCoexistGB) : hw.vramGB;
-
-  remaining.forEach(m => {
-    const minQ4Size = minQuantSizeGB(m);
-    if (minQ4Size > hw.vramGB) {
-      discarded.push({
-        model: m,
-        step: 3,
-        reason: `記憶體超限：${m.name} 最低實用量化檔需要約 ${minQ4Size} GB，目前配置 (${hw.name}) 無法載入。`
-      });
-    }
-  });
-  remaining = remaining.filter(m => {
-    const minQ4Size = minQuantSizeGB(m);
-    return minQ4Size <= hw.vramGB;
-  });
+  const budgetGB = wizardMemoryBudgetGB(hw, ans);
+  const ctx = state.canirun.contextLength;
+  const minNeed = m => requiredGB(m, quantKeysBySize(m)[0], ctx);
+  remaining = partition(remaining, 3, m => minNeed(m) > budgetGB,
+    m => `記憶體超限：${m.name} 最小量化檔加 ${fmtContext(ctx)} 上下文的 KV 與執行期，需要約 ${minNeed(m) === Infinity ? '（無資料）' : minNeed(m).toFixed(1)} GB，${ans.coexist === 'coexist' ? `共存模式下 ${hw.name} 只給 ${budgetGB} GB` : `${hw.name} 只有 ${hw.vramGB} GB`}。`, discarded);
 
   // Step 4: License Filter
   if (ans.license === 'commercial') {
-    remaining.forEach(m => {
-      if (!m.commercialAllowed) {
-        discarded.push({
-          model: m,
-          step: 4,
-          reason: `商用授權限制：${m.name} 授權條款 (${m.license}) 限制商業使用或需額外申請，無法直接作為商業交付物。`
-        });
-      }
-    });
-    remaining = remaining.filter(m => m.commercialAllowed);
+    remaining = partition(remaining, 4, m => !m.commercialAllowed,
+      m => `商用授權限制：${m.name} 授權條款 (${m.license}) 限制商業使用或需額外申請，無法直接作為商業交付物。`, discarded);
   }
 
   // Step 5: Ecosystem & Production Readiness
   if (ans.ecosystem === 'production') {
-    remaining.forEach(m => {
-      if (m.engineSupport.includes('Experimental')) {
-        discarded.push({
-          model: m,
-          step: 5,
-          reason: `生態尚未合併：${m.name} 推理引擎支援仍在 PR 階段 (需自編分支)，Day 16 鐵律「實驗品不進生產」。`
-        });
-      }
-    });
-    remaining = remaining.filter(m => !m.engineSupport.includes('Experimental'));
+    remaining = partition(remaining, 5, m => m.engineSupport.includes('Experimental'),
+      m => `生態尚未合併：${m.name} 推理引擎支援仍在 PR 或社群配方階段，Day 16 鐵律「實驗品不進生產」。`, discarded);
   }
 
-  // Score and Rank remaining models according to Day 16 empirical weights
-  remaining.sort((a, b) => {
-    // Agent 模式：考過繁中 Agent 考卷的模型排在沒考過的前面，
-    // 避免「沒受測」反而比「受測後分數普通」佔便宜
-    if (ans.workload === 'agent') {
-      const aTested = isKnown(a.jsonDisciplineScore);
-      const bTested = isKnown(b.jsonDisciplineScore);
-      if (aTested !== bTested) return aTested ? -1 : 1;
-    }
-
-    let aScore = 0;
-    let bScore = 0;
-
-    // 1. Workload Alignment (Day 16 Question 1)
-    if (ans.workload === 'prefill') {
-      // Prefill: Dense 27B/32B/70B get massive boost (200x faster than decode)
-      aScore += a.speedPrefillScore * 3.5;
-      bScore += b.speedPrefillScore * 3.5;
-      if (a.architecture === 'Dense') aScore += 120;
-      if (b.architecture === 'Dense') bScore += 120;
-    } else if (ans.workload === 'decode') {
-      // Decode: MoE with low active params get massive boost (active param throughput)
-      aScore += a.workloadFit.decode * 60;
-      bScore += b.workloadFit.decode * 60;
-      // High bonus for small active params (Ornith 3B, gpt-oss 14B)
-      aScore += (100 / Math.max(1, a.paramsActive)) * 12;
-      bScore += (100 / Math.max(1, b.paramsActive)) * 12;
-      if (a.architecture === 'MoE') aScore += 150;
-      if (b.architecture === 'MoE') bScore += 150;
-    } else if (ans.workload === 'agent') {
-      // Agent loops: JSON discipline + Low KV cache cost + MoE decode throughput
-      // 未受測者同組比較，這一項一律不計，不再用中位數代入
-      aScore += (isKnown(a.jsonDisciplineScore) ? a.jsonDisciplineScore : 0) * 3.0;
-      bScore += (isKnown(b.jsonDisciplineScore) ? b.jsonDisciplineScore : 0) * 3.0;
-      // Lower KV cost is significantly better (e.g. Ornith 10.56 KB vs 27B 34.5 KB = 3.3x gap)
-      aScore += Math.max(0, (40 - a.kvPerTokKB)) * 10;
-      bScore += Math.max(0, (40 - b.kvPerTokKB)) * 10;
-      aScore += a.workloadFit.agent * 45;
-      bScore += b.workloadFit.agent * 45;
-      if (a.architecture === 'MoE') aScore += 100;
-      if (b.architecture === 'MoE') bScore += 100;
-    }
-
-    // 2. Hardware Memory Sizing Fit (Day 16 Question 3)
-    // If dedicated on 128GB (GB10 / Mac 128), Ornith BF16 (120GB) is the textbook dedicated match
-    if (hw.vramGB >= 120 && ans.coexist === 'dedicated') {
-      if (a.id === 'ornith-35b-a3b') aScore += 200;
-      if (b.id === 'ornith-35b-a3b') bScore += 200;
-    } else if (hw.vramGB >= 120 && ans.coexist === 'coexist') {
-      // Coexist on 128GB: Ornith Q8 (38G) or gpt-oss (68G) leave huge headroom
-      if (a.id === 'ornith-35b-a3b' || a.id === 'gpt-oss-120b') aScore += 120;
-      if (b.id === 'ornith-35b-a3b' || b.id === 'gpt-oss-120b') bScore += 120;
-    }
-
-    // 3. License Score (Day 16 Question 4: MIT > Apache > Community)
-    if (a.license === 'MIT') aScore += 60;
-    if (b.license === 'MIT') bScore += 60;
-    if (a.license === 'Apache 2.0') aScore += 45;
-    if (b.license === 'Apache 2.0') bScore += 45;
-
-    // 4. Traditional Chinese Grade (Day 16 Question 2)
-    if (ans.tcLang === 'yes') {
-      const tcWeights = { 'S': 80, 'S-': 70, 'A': 60, 'A-': 55, 'B+': 30, 'B': 10 };
-      aScore += (tcWeights[a.tcGrade] || 0);
-      bScore += (tcWeights[b.tcGrade] || 0);
-    }
-
-    // 5. Day 16 empirical featured bonus
-    if (a.isDay16Featured) aScore += 80;
-    if (b.isDay16Featured) bScore += 80;
-
-    // 6. Arena Elo (mild weight, preventing leaderboard bias from overruling Day 16 rules)
-    // 2026-09 起分數尺度約 1300~1550，權重 0.2 讓全距影響維持在 50 分左右
-    aScore += (scoreValue(a, 'arenaCodeElo') - 1400) * 0.2;
-    bScore += (scoreValue(b, 'arenaCodeElo') - 1400) * 0.2;
-
-    return bScore - aScore;
+  // 先算好分數再排序，避免比較函式裡反覆重算
+  const scored = remaining.map(m => ({ m, tested: isKnown(m.jsonDisciplineScore), score: wizardScore(m, ans, hw) }));
+  scored.sort((a, b) => {
+    // Agent 模式：考過繁中 Agent 考卷的模型排在沒考過的前面，避免「沒受測」反而比「受測後分數普通」佔便宜
+    if (ans.workload === 'agent' && a.tested !== b.tested) return a.tested ? -1 : 1;
+    return b.score - a.score;
   });
 
-  return { remaining, discarded };
+  return { remaining: scored.map(x => x.m), discarded, budgetGB };
 }
 
 // ----------------------------------------------------
 // CanIRun VRAM & Speed Calculation Formula
 // ----------------------------------------------------
+const FIT_STATUS = {
+  smooth: { text: '完美暢跑', badge: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' },
+  playable: { text: '良好運行', badge: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
+  tight: { text: '部分卸載 CPU', badge: 'bg-orange-500/20 text-orange-300 border-orange-500/40' },
+  oom: { text: '無法運行', badge: 'bg-rose-500/20 text-rose-300 border-rose-500/40' },
+  unknown: { text: '無資料', badge: 'bg-slate-800 text-slate-400 border-slate-700' }
+};
+
 function calculateModelRunnability(model, quantKey, hwProfile, contextTokens, reserveGB = 0) {
   const quant = model.quantProfiles[quantKey];
   if (!quant) return null;
 
-  const weightsGB = quant.sizeGB;
-  
-  // KV Cache calculation:
-  // KV cache GB = (2 * layers * kv_heads * head_dim * precision_bytes * contextTokens) / (1024^3)
-  // Simplified using accurate model.kvPerTokKB
-  const kvCacheGB = (model.kvPerTokKB * contextTokens) / (1024 * 1024);
-  
-  // CUDA / Metal & Framework Runtime Headroom (2GB base)
-  const runtimeHeadroomGB = 2.0;
+  const weightsGB = isKnown(quant.sizeGB) ? quant.sizeGB : null;
+  const kvGB = kvCacheGB(model, contextTokens);
+  const totalRequiredGB = isKnown(weightsGB) ? weightsGB + (kvGB || 0) + RUNTIME_HEADROOM_GB : null;
+  const availableVramGB = Math.max(0, hwProfile.vramGB - reserveGB);
 
-  const totalRequiredGB = weightsGB + kvCacheGB + runtimeHeadroomGB;
-  const availableVramGB = hwProfile.vramGB - reserveGB;
-
-  let status = 'smooth'; // 'smooth' | 'playable' | 'tight' | 'oom'
-  let statusText = '🟢 完美暢跑';
-  let badgeColor = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
-  let offloadLayers = 0;
-  let estimatedDecodeSpeed = '30~50 t/s';
-
-  if (totalRequiredGB <= availableVramGB * 0.85) {
-    status = 'smooth';
-    statusText = '完美暢跑 (滿載 GPU)';
-    badgeColor = 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
-    estimatedDecodeSpeed = model.architecture === 'MoE' ? '45~75 t/s' : '22~38 t/s';
-  } else if (totalRequiredGB <= availableVramGB) {
-    status = 'playable';
-    statusText = '良好運行 (顯存充裕)';
-    badgeColor = 'bg-amber-500/20 text-amber-300 border-amber-500/40';
-    estimatedDecodeSpeed = model.architecture === 'MoE' ? '30~50 t/s' : '15~25 t/s';
-  } else if (totalRequiredGB <= hwProfile.vramGB + 32) { // Can offload to CPU RAM
-    status = 'tight';
-    statusText = '部分卸載 CPU (速度變慢)';
-    badgeColor = 'bg-orange-500/20 text-orange-300 border-orange-500/40';
-    estimatedDecodeSpeed = '3~10 t/s (受限 PCIe/RAM 頻寬)';
-  } else {
-    status = 'oom';
-    statusText = '無法運行 (OOM 顯存爆滿)';
-    badgeColor = 'bg-rose-500/20 text-rose-300 border-rose-500/40';
-    estimatedDecodeSpeed = '0 t/s (OOM)';
-  }
+  let status;
+  if (!isKnown(totalRequiredGB)) status = 'unknown';
+  else if (totalRequiredGB <= availableVramGB * 0.85) status = 'smooth';
+  else if (totalRequiredGB <= availableVramGB) status = 'playable';
+  // 統一記憶體（Mac、GB10、Strix Halo、純 CPU）沒有「卸載到系統記憶體」這條路
+  else if (!hwProfile.unified && totalRequiredGB <= hwProfile.vramGB + 32) status = 'tight';
+  else status = 'oom';
 
   return {
     quantKey,
-    weightsGB: weightsGB.toFixed(1),
-    kvCacheGB: kvCacheGB.toFixed(2),
-    totalRequiredGB: totalRequiredGB.toFixed(1),
-    availableVramGB: availableVramGB.toFixed(1),
+    weightsGB,
+    kvCacheGB: kvGB,
+    totalRequiredGB,
+    availableVramGB,
     status,
-    statusText,
-    badgeColor,
-    estimatedDecodeSpeed
+    statusText: FIT_STATUS[status].text,
+    badgeColor: FIT_STATUS[status].badge,
+    speed: decodeSpeed(model, quantKey, hwProfile, status)
   };
+}
+
+// 速度欄：有作者實測就用實測（只認同一平台、同一檔位），否則給頻寬理論上限
+function decodeSpeed(model, quantKey, hw, status) {
+  if (status === 'oom') return { kind: 'oom', html: '<span class="text-rose-300">放不下</span>' };
+  const measured = benchmarksFor(model.id, hw.id, quantKey).filter(b => isKnown(b.decode));
+  if (measured.length) {
+    const b = measured[measured.length - 1];
+    return { kind: 'measured', value: b.decode, html: `<span class="text-emerald-300 font-bold">${b.decode} t/s</span> <span class="text-[11px] text-emerald-400">實測</span>` };
+  }
+  if (status === 'tight') return { kind: 'offload', html: '<span class="text-orange-300">受 PCIe／系統記憶體頻寬限制</span>' };
+  const ceiling = decodeCeiling(model, quantKey, hw);
+  if (!isKnown(ceiling)) return { kind: 'unknown', html: fmt(null) };
+  return { kind: 'ceiling', value: ceiling, html: `<span class="text-amber-300">≤ ${ceiling.toFixed(0)} t/s</span> <span class="text-[11px] text-slate-500">理論上限</span>` };
 }
 
 // ----------------------------------------------------
 // UI Rendering Functions
 // ----------------------------------------------------
+const TAB_CLASSES = {
+  desktop: {
+    base: 'nav-tab-btn px-3 py-2 rounded-xl text-sm whitespace-nowrap transition-all duration-200 flex items-center gap-1.5 border',
+    on: 'font-semibold bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-lg shadow-emerald-950/40',
+    off: 'font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border-transparent'
+  },
+  mobile: {
+    base: 'nav-tab-btn px-3 py-1.5 rounded-lg text-xs whitespace-nowrap',
+    on: 'font-semibold bg-emerald-500/20 text-emerald-400',
+    off: 'font-medium text-slate-400'
+  }
+};
+
+const TAB_RENDERERS = {
+  wizard: () => renderWizard(),
+  canirun: () => renderCanIRun(),
+  leaderboard: () => renderLeaderboard(),
+  bench: () => renderBenchmarks(),
+  storage: () => renderStorageAdvisor(),
+  radar: () => renderRadarChart(),
+  day16: () => renderDay16()
+};
+
+// 重繪目前分頁（硬體或主題改變時呼叫）
+function render() {
+  const fn = TAB_RENDERERS[state.activeTab];
+  if (fn) fn();
+  renderIcons();
+}
 
 function setTab(tabName) {
+  if (!TAB_RENDERERS[tabName]) tabName = 'wizard';
   state.activeTab = tabName;
   document.querySelectorAll('.nav-tab-btn').forEach(btn => {
-    if (btn.dataset.tab === tabName) {
-      btn.className = 'nav-tab-btn px-4 py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-lg shadow-emerald-950/40 flex items-center gap-2';
-    } else {
-      btn.className = 'nav-tab-btn px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent flex items-center gap-2';
-    }
+    const set = TAB_CLASSES[btn.dataset.variant] || TAB_CLASSES.desktop;
+    const active = btn.dataset.tab === tabName;
+    btn.className = `${set.base} ${active ? set.on : set.off}`;
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    btn.tabIndex = active ? 0 : -1;
   });
 
   document.querySelectorAll('.tab-content-panel').forEach(panel => {
-    if (panel.id === `tab-content-${tabName}`) {
-      panel.classList.remove('hidden');
-    } else {
-      panel.classList.add('hidden');
-    }
+    panel.classList.toggle('hidden', panel.id !== `tab-content-${tabName}`);
   });
 
-  if (tabName === 'radar') renderRadarChart();
-  if (tabName === 'canirun') renderCanIRun();
-  if (tabName === 'wizard') renderWizard();
-  if (tabName === 'leaderboard') renderLeaderboard();
-  if (tabName === 'storage') renderStorageAdvisor();
-  if (tabName === 'day16') renderDay16();
-
-  if (window.lucide) lucide.createIcons();
+  try { history.replaceState(null, '', tabName === 'wizard' ? location.pathname : `#${tabName}`); } catch (e) {}
+  render();
 }
 
 // Render 5-Step Wizard
@@ -548,7 +567,7 @@ function renderWizard() {
   if (!container) return;
 
   const hw = getHardware(state.canirun.selectedHardwareId);
-  const { remaining, discarded } = evaluateWizard();
+  const { remaining, discarded, budgetGB } = evaluateWizard();
   const ans = state.wizard.answers;
   const currentStep = state.wizard.step;
 
@@ -561,14 +580,14 @@ function renderWizard() {
             <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
               步驟 0：確認硬體平台 (Hardware Platform)
             </span>
-            <span class="text-xs text-slate-400">目前生效：<strong class="text-white">${hw.name}</strong></span>
+            <span class="text-xs text-slate-400">目前生效：<strong class="text-white">${hw.name}</strong>${ans.coexist === 'coexist' ? `（共存預算 ${wizardMemoryBudgetGB(hw, ans)} GB、上下文 ${fmtContext(state.canirun.contextLength)}）` : `（獨佔、上下文 ${fmtContext(state.canirun.contextLength)}）`}</span>
           </div>
           <p class="text-xs text-slate-300 mt-1">
             進入後請先選取您的目標硬體規格。所有模型淘汰規則、顯存佔用、KV Cache 算力與首選推薦皆以此即時運算。
           </p>
         </div>
 
-        <button onclick="detectLocalHardware()" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 font-bold text-xs flex items-center gap-1.5 transition shrink-0 self-start md:self-auto">
+        <button onclick="detectLocalHardware()" class="detect-hardware-btn px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 font-bold text-xs flex items-center gap-1.5 transition shrink-0 self-start md:self-auto">
           <i data-lucide="cpu" class="w-4 h-4"></i> 自動偵測硬體 (WebGPU)
         </button>
       </div>
@@ -580,6 +599,7 @@ function renderWizard() {
           <span class="text-slate-400 text-xs font-semibold mr-1">常用快捷選取：</span>
           ${[
             { id: 'nvidia-gb10', label: 'NVIDIA GB10 (128GB)' },
+            { id: 'dual-gb10', label: '雙機 GB10 (256GB)' },
             { id: 'mac-128', label: 'Apple M5 Max (128GB)' },
             { id: 'rtx-5090-32', label: 'RTX 5090 (32GB)' },
             { id: 'rtx-4090-24', label: 'RTX 4090 (24GB)' },
@@ -598,38 +618,7 @@ function renderWizard() {
 
         <!-- Full Select Dropdown -->
         <div class="w-full lg:w-72">
-          <select onchange="setGlobalHardware(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none">
-            <optgroup label="AI 超級晶片 / 工作站 (Grace Blackwell & Grace Hopper)">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'superchip').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="Apple Silicon (統一記憶體)">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'apple').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name} (${h.vramGB}GB Unified)</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="NVIDIA 獨立顯卡 (VRAM)">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'nvidia').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="AMD & Intel 獨立顯卡">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'amd' || h.type === 'intel').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="企業級加速卡 / 專業卡">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'enterprise').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="純 CPU + 系統記憶體">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'cpu').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-          </select>
+          ${hardwareSelectHtml(hw.id, 'setGlobalHardware', 'aria-label="目標硬體平台"')}
         </div>
       </div>
     </div>
@@ -665,7 +654,7 @@ function renderWizard() {
           }">
             <div class="flex items-center justify-between text-xs font-bold font-mono mb-1">
               <span>Q${s.num}</span>
-              ${currentStep > s.num ? '<i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-emerald-400"></i>' : ''}
+              ${currentStep > s.num ? '<i data-lucide="circle-check" class="w-3.5 h-3.5 text-emerald-400"></i>' : ''}
             </div>
             <div class="font-bold text-sm leading-tight">${s.title}</div>
             <div class="text-[11px] text-slate-400 truncate mt-0.5">${s.sub}</div>
@@ -707,7 +696,7 @@ function renderWizard() {
                 <div class="p-2.5 rounded-lg bg-slate-950/80 border border-rose-900/20 flex flex-col gap-1">
                   <div class="flex items-center justify-between">
                     <span class="font-bold text-slate-200">${d.model.name}</span>
-                    <span class="font-mono text-rose-400 text-[10px] px-1.5 py-0.5 rounded bg-rose-950/40 border border-rose-900/50">淘汰於 Q${d.step}</span>
+                    <span class="font-mono text-rose-400 text-[11px] px-1.5 py-0.5 rounded bg-rose-950/40 border border-rose-900/50">淘汰於 Q${d.step}</span>
                   </div>
                   <div class="text-slate-400">${d.reason}</div>
                 </div>
@@ -726,12 +715,12 @@ function renderWizard() {
             <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
               <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> 決策診斷結果
             </span>
-            <span class="text-xs text-slate-400">目前硬體：<span class="text-emerald-300 font-bold">${getHardware(state.canirun.selectedHardwareId).name}</span></span>
+            <span class="text-xs text-slate-400">目前硬體：<span class="text-emerald-300 font-bold">${hw.name}</span></span>
           </div>
 
           ${remaining.length === 0 ? `
             <div class="py-12 text-center text-slate-400">
-              <i data-lucide="alert-triangle" class="w-12 h-12 mx-auto text-amber-400 mb-3"></i>
+              <i data-lucide="triangle-alert" class="w-12 h-12 mx-auto text-amber-400 mb-3"></i>
               <h3 class="text-lg font-bold text-white mb-1">條件過於嚴苛，無存活模型</h3>
               <p class="text-xs max-w-sm mx-auto text-slate-400">建議放寬硬體顯存限制（選擇更高規格顯卡）或允許非商用/實驗性生態。</p>
             </div>
@@ -739,8 +728,9 @@ function renderWizard() {
             <!-- Top Pick Champion -->
             ${(() => {
               const champion = remaining[0];
-              const quantKey = pickQuantKey(champion, ans.tcLang);
-              const quant = champion.quantProfiles[quantKey] || Object.values(champion.quantProfiles)[0];
+              const quantKey = wizardQuantKey(champion, budgetGB);
+              const quant = champion.quantProfiles[quantKey];
+              const measured = benchmarksFor(champion.id, hw.id).filter(b => isKnown(b.decode));
 
               return `
                 <div class="mb-6">
@@ -758,38 +748,38 @@ function renderWizard() {
                   <div class="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                     <span class="text-slate-400 block text-[11px]">架構類型</span>
                     <span class="font-bold text-white text-sm">${champion.architecture}</span>
-                    <span class="text-[10px] text-slate-400 block">啟用 ${champion.paramsActive}B / 總 ${champion.paramsTotal}B</span>
+                    <span class="text-[11px] text-slate-400 block">啟用 / 總量：${fmtParams(champion)}</span>
                   </div>
                   <div class="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                     <span class="text-slate-400 block text-[11px]">Arena Coding Elo</span>
                     <span class="font-bold text-emerald-400 text-sm font-mono">${fmt(champion.arenaCodeElo)}</span>
-                    <span class="text-[10px] text-slate-400 block">HumanEval: ${fmt(champion.humanEval, '%')}</span>
+                    <span class="text-[11px] text-slate-400 block">HumanEval: ${fmt(champion.humanEval, '%')}</span>
                   </div>
                   <div class="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                     <span class="text-slate-400 block text-[11px]">繁中評級 / 量化底線</span>
                     <span class="font-bold text-amber-300 text-sm">${champion.tcGrade} 級</span>
-                    <span class="text-[10px] text-slate-400 block">${champion.tcQuantMinBit}</span>
+                    <span class="text-[11px] text-slate-400 block">${champion.tcQuantMinBit}</span>
                   </div>
                   <div class="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
                     <span class="text-slate-400 block text-[11px]">KV 每 Token 成本</span>
                     <span class="font-bold text-cyan-300 text-sm font-mono">${fmt(champion.kvPerTokKB, ' KB')}</span>
-                    <span class="text-[10px] text-slate-400 block">16k Cache: ${isKnown(champion.kvPerTokKB) ? `~${((champion.kvPerTokKB * 16384)/1048576).toFixed(1)} GB` : '無資料'}</span>
+                    <span class="text-[11px] text-slate-400 block">${fmtContext(state.canirun.contextLength)} Cache: ${isKnown(champion.kvPerTokKB) ? `~${kvCacheGB(champion, state.canirun.contextLength).toFixed(1)} GB` : '無資料'}</span>
                   </div>
                 </div>
 
                 <!-- Deployment & Startup Command Generator -->
                 <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs mb-6">
                   <div class="flex items-center justify-between text-slate-400 mb-2 font-sans font-semibold">
-                    <span class="flex items-center gap-1.5 text-emerald-400"><i data-lucide="terminal" class="w-3.5 h-3.5"></i> 推薦啟動指令 (llama.cpp / Ollama)</span>
+                    <span class="flex items-center gap-1.5 text-emerald-400"><i data-lucide="terminal" class="w-3.5 h-3.5"></i> 推薦啟動指令 (${startupCommand(champion, quantKey).engine})</span>
                     <button onclick="copyStartupCmd('${champion.id}')" class="hover:text-white transition text-[11px] px-2 py-0.5 rounded bg-slate-800 border border-slate-700">
                       複製指令
                     </button>
                   </div>
-                  <div class="text-slate-300 overflow-x-auto p-2 rounded bg-slate-900/90 select-all leading-relaxed" id="startup-cmd-box">
-                    ./llama-server -m models/${champion.id}.${quantKey}.gguf -c 16384 -ngl 99 --port 8080 --host 0.0.0.0
-                  </div>
+                  <div class="text-slate-300 overflow-x-auto p-2 rounded bg-slate-900/90 select-all leading-relaxed whitespace-pre" id="startup-cmd-box">${escapeHtml(startupCommand(champion, quantKey).cmd)}</div>
                   <div class="text-[11px] text-slate-400 mt-2 font-sans">
-                    <span class="text-slate-300">建議量化檔：</span><strong class="text-emerald-400">${quantKey}</strong> (${quant.sizeGB} GB) ｜ ${champion.tcQuantNote}
+                    <span class="text-slate-300">建議量化檔：</span><strong class="text-emerald-400">${quantKey}</strong> (${fmt(quant && quant.sizeGB, ' GB')})
+                    ${measured.length ? ` ｜ <span class="text-emerald-300">本平台實測 ${measured.map(b => `${b.decode} t/s（${escapeHtml(b.weights)}）`).join('、')}</span>` : ''}
+                    ｜ ${champion.tcQuantNote}
                   </div>
                 </div>
 
@@ -802,11 +792,11 @@ function renderWizard() {
                         <div class="p-3 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs hover:border-slate-700 transition">
                           <div>
                             <span class="font-bold text-white text-sm">${alt.name}</span> ${examBadge(alt)}
-                            <span class="text-slate-400 block text-[11px]">${alt.architecture} (${alt.paramsTotal}B) ｜ 授權: ${alt.license} ｜ JSON 紀律: ${fmt(alt.jsonDisciplineScore, '/100')}</span>
+                            <span class="text-slate-400 block text-[11px]">${alt.architecture} (${fmtParams(alt)}) ｜ 授權: ${alt.license} ｜ JSON 紀律: ${fmt(alt.jsonDisciplineScore, '/100')}</span>
                           </div>
                           <div class="text-right">
                             <span class="text-emerald-400 font-mono font-bold">${fmt(alt.arenaCodeElo, ' Elo')}</span>
-                            <span class="text-[10px] text-slate-400 block">繁中 ${alt.tcGrade}</span>
+                            <span class="text-[11px] text-slate-400 block">繁中 ${alt.tcGrade}</span>
                           </div>
                         </div>
                       `).join('')}
@@ -826,7 +816,7 @@ function renderWizard() {
             <p class="text-slate-300 leading-relaxed">
               Day 16 指出：「任何 OpenAI 相容端點半小時考完。」針對繁體中文語境、JSON 格式無聊多話、Tool Calling 紀律設計的開源測試套件。
             </p>
-            <a href="${DAY16_METHODOLOGY.examRepo}" target="_blank" class="inline-flex items-center gap-1.5 mt-2.5 text-indigo-300 font-semibold hover:underline">
+            <a href="${DAY16_METHODOLOGY.examRepo}" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 mt-2.5 text-indigo-300 font-semibold hover:underline">
               前往開源考卷專案 (ivanusto/llm-zhtw-agent-exam) <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
             </a>
           </div>
@@ -854,7 +844,7 @@ function renderWizardStepQuestion(step, ans) {
               <div>
                 <div class="font-bold text-sm flex items-center gap-2">
                   長輸入、短輸出 (Prefill 型用戶)
-                  <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">首選密集 27B/32B</span>
+                  <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">首選密集 27B/32B</span>
                 </div>
                 <div class="text-xs text-slate-400 mt-1">
                   文件摘要、RAG 問答、大型程式碼庫分析。密集模型 prefill 效率極高（比 decode 快 200 倍），decode 慢無所謂因為很少用。
@@ -869,7 +859,7 @@ function renderWizardStepQuestion(step, ans) {
               <div>
                 <div class="font-bold text-sm flex items-center gap-2">
                   短輸入、長輸出 (Decode 型用戶)
-                  <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300">首選小啟用量 MoE</span>
+                  <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300">首選小啟用量 MoE</span>
                 </div>
                 <div class="text-xs text-slate-400 mt-1">
                   創意寫作、長文翻譯、即時對話。頻寬是你的天花板，看啟用參數量（如 Ornith 3B、gpt-oss 14B 可達 30~60 t/s）。
@@ -884,7 +874,7 @@ function renderWizardStepQuestion(step, ans) {
               <div>
                 <div class="font-bold text-sm flex items-center gap-2">
                   Agent 迴圈 (多輪 Tool Calling & 多 Session)
-                  <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">全能要求型</span>
+                  <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">全能要求型</span>
                 </div>
                 <div class="text-xs text-slate-400 mt-1">
                   幾百輪工具呼叫。既要 Prefill、又要 Decode，更嚴格要求 KV Cache 成本與「只輸出純 JSON」格式紀律。
@@ -951,7 +941,7 @@ function renderWizardStepQuestion(step, ans) {
               <div>
                 <div class="font-bold text-sm flex items-center gap-2">
                   共存型 (多功能工作站 / 生產集群)
-                  <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">推薦</span>
+                  <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">推薦</span>
                 </div>
                 <div class="text-xs text-slate-400 mt-1">
                   模型只是機器上的服務之一。保留餘裕給 ComfyUI 繪圖、第二款小模型或日常開發。選 27B/32B 量化檔或 gpt-oss MXFP4。
@@ -1030,7 +1020,7 @@ function renderWizardStepQuestion(step, ans) {
               <div>
                 <div class="font-bold text-sm flex items-center gap-2">
                   生產服務標準 (已合併進 vLLM / llama.cpp / Ollama 正式版)
-                  <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">穩定首選</span>
+                  <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">穩定首選</span>
                 </div>
                 <div class="text-xs text-slate-400 mt-1">
                   量化生態完整（豐富 GGUF/AWQ）、硬體平台有穩定實測。排除仍需自編 PR 分支的實驗性模型。
@@ -1058,22 +1048,50 @@ function renderWizardStepQuestion(step, ans) {
 
 function setWizardStep(step) {
   state.wizard.step = step;
-  renderWizard();
-  if (window.lucide) lucide.createIcons();
+  render();
 }
 
 function setWizardAnswer(key, val) {
   state.wizard.answers[key] = val;
-  renderWizard();
-  if (window.lucide) lucide.createIcons();
+  render();
+}
+
+// 精靈推薦的量化檔：只在共存／獨佔預算放得下的檔位裡挑
+function wizardQuantKey(m, budgetGB) {
+  const ctx = state.canirun.contextLength;
+  return pickQuantKey(m, state.wizard.answers.tcLang, k => requiredGB(m, k, ctx) <= budgetGB);
+}
+
+// 依量化檔類型產生啟動指令：GGUF 走 llama.cpp，EXL3 與 ds4 走各自的社群引擎，其餘（BF16、FP8、NVFP4…）走 vLLM
+function startupCommand(m, quantKey) {
+  const ctx = state.canirun.contextLength;
+  const src = m.sources || {};
+  if (/EXL3/.test(quantKey)) {
+    return { engine: '社群配方', cmd: `# ${quantKey} 需要 EXL3 專用引擎（例如 TensorFold），請依量化檔 repo 的部署說明啟動\n# 量化檔：${src.quant || '見模型詳情'}` };
+  }
+  if (/\(ds4\)/.test(quantKey)) {
+    return { engine: 'ds4', cmd: `# ${quantKey} 由 ds4 引擎載入\n# 量化檔：${src.quant || '見模型詳情'}` };
+  }
+  if (/^(UD-)?(I?Q\d)/.test(quantKey)) {
+    return { engine: 'llama.cpp', cmd: `./llama-server -m "models/${m.id}-${quantKey}.gguf" -c ${ctx} -ngl 99 --jinja --port 8080 --host 0.0.0.0` };
+  }
+  const repo = String(src.specs || '').replace('https://huggingface.co/', '') || m.id;
+  return { engine: 'vLLM', cmd: `vllm serve ${repo} --max-model-len ${ctx} --port 8080 --host 0.0.0.0` };
+}
+
+async function copyToClipboard(text, okMsg) {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(okMsg);
+  } catch (e) {
+    showToast('瀏覽器不允許寫入剪貼簿，請手動選取複製');
+  }
 }
 
 function copyStartupCmd(modelId) {
   const model = getModel(modelId);
-  const quantKey = pickQuantKey(model, state.wizard.answers.tcLang);
-  const cmd = `./llama-server -m models/${model.id}.${quantKey}.gguf -c 16384 -ngl 99 --port 8080 --host 0.0.0.0`;
-  navigator.clipboard.writeText(cmd);
-  showToast('已複製啟動指令至剪貼簿！');
+  const { budgetGB } = evaluateWizard();
+  copyToClipboard(startupCommand(model, wizardQuantKey(model, budgetGB)).cmd, '已複製啟動指令至剪貼簿！');
 }
 
 // ----------------------------------------------------
@@ -1087,14 +1105,8 @@ function renderCanIRun() {
   const ctx = state.canirun.contextLength;
   const reserveGB = state.canirun.reserveCoexistGB;
   const filterArch = state.canirun.filterArchitecture;
-  const query = state.canirun.searchQuery.toLowerCase();
 
-  let models = window.MODELS_DATABASE.filter(m => {
-    if (filterArch !== 'all' && m.architecture !== filterArch) return false;
-    if (query && !m.name.toLowerCase().includes(query) && !m.family.toLowerCase().includes(query)) return false;
-    return true;
-  });
-
+  // 控制項只在這裡畫一次；滑桿與搜尋框之後只更新結果區，輸入中的元素不會被換掉
   container.innerHTML = `
     <!-- Top Hardware Selector & Config Card -->
     <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 mb-8 backdrop-blur-md shadow-xl">
@@ -1102,65 +1114,35 @@ function renderCanIRun() {
         <div>
           <div class="flex items-center gap-2">
             <span class="text-xs font-semibold uppercase tracking-wider text-emerald-400">CanIRun.ai 算力與顯存模擬</span>
-            <span class="px-2 py-0.5 rounded-full text-[10px] bg-slate-800 text-slate-300 border border-slate-700">Client-side WebGPU Ready</span>
+            <span class="px-2 py-0.5 rounded-full text-[11px] bg-slate-800 text-slate-300 border border-slate-700">瀏覽器端試算</span>
           </div>
-          <h2 class="text-xl font-bold text-white mt-1">硬體相容度與推理速度實測試算</h2>
+          <h2 class="text-xl font-bold text-white mt-1">硬體相容度與推理速度試算</h2>
+          <p class="text-[11px] text-slate-400 mt-1">速度欄：有作者 GB10 實測就顯示實測值；否則顯示頻寬理論上限（頻寬 ÷ 每 token 讀取的啟用權重），GB10 上各引擎實測約達上限的 ${ENGINE_EFFICIENCY_RANGE.map(x => `${Math.round(x * 100)}%`).join(' 到 ')}（Day 11）。</p>
         </div>
 
-        <button id="detect-hardware-btn" onclick="detectLocalHardware()" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-950/50 flex items-center gap-2 transition self-start lg:self-auto">
-          <i data-lucide="cpu" class="w-4 h-4"></i> 自動偵測本機硬體 (WebGPU)
+        <button onclick="detectLocalHardware()" class="detect-hardware-btn px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-950/50 flex items-center gap-2 transition self-start lg:self-auto">
+          <i data-lucide="cpu" class="w-4 h-4"></i> 自動偵測本機硬體
         </button>
       </div>
 
       <!-- Controls Grid -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-6 pt-6 text-xs">
-        
+
         <!-- 1. Hardware Select -->
         <div>
-          <label class="block font-semibold text-slate-300 mb-2">選擇測試硬體平台：</label>
-          <select onchange="setCanIRunHardware(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-medium text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none">
-            <optgroup label="AI 超級晶片 / 工作站 (Grace Blackwell & Grace Hopper)">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'superchip').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="Apple Silicon (統一記憶體)">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'apple').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name} (${h.vramGB}GB Unified)</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="NVIDIA 獨立顯卡 (VRAM)">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'nvidia').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="AMD & Intel 獨立顯卡">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'amd' || h.type === 'intel').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="企業級加速卡 / 專業卡">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'enterprise').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-            <optgroup label="純 CPU + 系統記憶體">
-              ${window.HARDWARE_PROFILES.filter(h => h.type === 'cpu').map(h => `
-                <option value="${h.id}" ${h.id === hw.id ? 'selected' : ''}>${h.name}</option>
-              `).join('')}
-            </optgroup>
-          </select>
+          <label for="canirun-hw" class="block font-semibold text-slate-300 mb-2">選擇測試硬體平台：</label>
+          ${hardwareSelectHtml(hw.id, 'setCanIRunHardware', 'id="canirun-hw"')}
           <span class="text-[11px] text-slate-400 mt-1.5 block">${hw.description}</span>
         </div>
 
         <!-- 2. Context Length Slider -->
         <div>
           <div class="flex items-center justify-between mb-2">
-            <label class="font-semibold text-slate-300">上下文長度 (Context Length)：</label>
-            <span class="font-mono font-bold text-emerald-400">${(ctx / 1024).toFixed(0)}k (${formatNumber(ctx)} tok)</span>
+            <label for="canirun-ctx" class="font-semibold text-slate-300">上下文長度 (Context Length)：</label>
+            <span id="canirun-ctx-label" class="font-mono font-bold text-emerald-400"></span>
           </div>
-          <input type="range" min="2048" max="131072" step="2048" value="${ctx}" oninput="setCanIRunContext(this.value)" class="w-full accent-emerald-400 cursor-pointer">
-          <div class="flex justify-between text-[10px] text-slate-500 font-mono mt-1">
+          <input id="canirun-ctx" type="range" min="2048" max="131072" step="2048" value="${ctx}" oninput="setCanIRunContext(this.value)" class="w-full accent-emerald-400 cursor-pointer">
+          <div class="flex justify-between text-[11px] text-slate-500 font-mono mt-1" aria-hidden="true">
             <span>2k</span>
             <span>16k (標準)</span>
             <span>64k</span>
@@ -1171,11 +1153,11 @@ function renderCanIRun() {
         <!-- 3. Coexistence Headroom -->
         <div>
           <div class="flex items-center justify-between mb-2">
-            <label class="font-semibold text-slate-300">保留餘裕 (ComfyUI / 系統)：</label>
-            <span class="font-mono font-bold text-cyan-400">${reserveGB} GB</span>
+            <label for="canirun-reserve" class="font-semibold text-slate-300">保留餘裕 (ComfyUI / 系統)：</label>
+            <span id="canirun-reserve-label" class="font-mono font-bold text-cyan-400"></span>
           </div>
-          <input type="range" min="0" max="48" step="4" value="${reserveGB}" oninput="setCanIRunReserve(this.value)" class="w-full accent-cyan-400 cursor-pointer">
-          <div class="flex justify-between text-[10px] text-slate-500 font-mono mt-1">
+          <input id="canirun-reserve" type="range" min="0" max="48" step="4" value="${reserveGB}" oninput="setCanIRunReserve(this.value)" class="w-full accent-cyan-400 cursor-pointer">
+          <div class="flex justify-between text-[11px] text-slate-500 font-mono mt-1" aria-hidden="true">
             <span>0G (獨佔)</span>
             <span>16G (共存標準)</span>
             <span>32G</span>
@@ -1187,16 +1169,16 @@ function renderCanIRun() {
 
       <!-- Quick Summary Status Bar -->
       <div class="mt-6 pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-4 text-xs font-mono">
-        <div class="flex items-center gap-4 text-slate-300">
+        <div class="flex flex-wrap items-center gap-4 text-slate-300">
           <span>總記憶體/顯存: <strong class="text-white">${hw.vramGB} GB</strong></span>
-          <span>可用淨顯存: <strong class="text-emerald-400">${Math.max(0, hw.vramGB - reserveGB)} GB</strong></span>
-          <span>記憶體頻寬: <strong class="text-cyan-400">${hw.memBandwidthGBs} GB/s</strong></span>
+          <span>可用淨顯存: <strong id="canirun-available" class="text-emerald-400"></strong></span>
+          <span>記憶體頻寬: <strong class="text-cyan-400">${fmt(hw.memBandwidthGBs, ' GB/s')}</strong></span>
         </div>
-        <div class="flex items-center gap-3 text-[11px] font-sans">
+        <div class="flex flex-wrap items-center gap-3 text-[11px] font-sans">
           <span class="inline-flex items-center gap-1 text-emerald-400"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> 完美暢跑</span>
           <span class="inline-flex items-center gap-1 text-amber-400"><span class="w-2 h-2 rounded-full bg-amber-400"></span> 良好運行</span>
-          <span class="inline-flex items-center gap-1 text-orange-400"><span class="w-2 h-2 rounded-full bg-orange-400"></span> CPU卸載/慢</span>
-          <span class="inline-flex items-center gap-1 text-rose-400"><span class="w-2 h-2 rounded-full bg-rose-400"></span> OOM爆顯存</span>
+          ${hw.unified ? '' : '<span class="inline-flex items-center gap-1 text-orange-400"><span class="w-2 h-2 rounded-full bg-orange-400"></span> CPU卸載/慢</span>'}
+          <span class="inline-flex items-center gap-1 text-rose-400"><span class="w-2 h-2 rounded-full bg-rose-400"></span> 放不下</span>
         </div>
       </div>
     </div>
@@ -1205,13 +1187,13 @@ function renderCanIRun() {
     <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
       <div class="relative w-full sm:w-72">
         <i data-lucide="search" class="w-4 h-4 absolute left-3 top-3 text-slate-500"></i>
-        <input type="text" placeholder="搜尋模型 (如 Qwen, Ornith, DeepSeek)..." value="${state.canirun.searchQuery}" oninput="setCanIRunSearch(this.value)" class="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+        <input type="search" aria-label="搜尋模型" placeholder="搜尋模型 (如 Qwen, Ornith, DeepSeek)..." value="${escapeHtml(state.canirun.searchQuery)}" oninput="setCanIRunSearch(this.value)" class="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500">
       </div>
 
-      <div class="flex items-center gap-2 self-end sm:self-auto text-xs">
+      <div class="flex items-center gap-2 self-end sm:self-auto text-xs" role="group" aria-label="架構篩選">
         <span class="text-slate-400">架構篩選:</span>
         ${['all', 'Dense', 'MoE'].map(arch => `
-          <button onclick="setCanIRunArchFilter('${arch}')" class="px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+          <button onclick="setCanIRunArchFilter('${arch}')" aria-pressed="${filterArch === arch}" class="px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
             filterArch === arch
               ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
               : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
@@ -1223,27 +1205,46 @@ function renderCanIRun() {
     </div>
 
     <!-- Models Hardware Compatibility Matrix (Cards Grid) -->
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-      ${models.map(model => renderCanIRunModelCard(model, hw, ctx, reserveGB)).join('')}
-    </div>
+    <div id="canirun-results" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6" aria-live="polite"></div>
   `;
+  updateCanIRunResults();
+}
+
+function updateCanIRunResults() {
+  const grid = document.getElementById('canirun-results');
+  if (!grid) return;
+  const hw = getHardware(state.canirun.selectedHardwareId);
+  const ctx = state.canirun.contextLength;
+  const reserveGB = state.canirun.reserveCoexistGB;
+  const filterArch = state.canirun.filterArchitecture;
+  const query = state.canirun.searchQuery.trim().toLowerCase();
+
+  const ctxLabel = document.getElementById('canirun-ctx-label');
+  if (ctxLabel) ctxLabel.textContent = `${(ctx / 1024).toFixed(0)}k (${formatNumber(ctx)} tok)`;
+  const reserveLabel = document.getElementById('canirun-reserve-label');
+  if (reserveLabel) reserveLabel.textContent = `${reserveGB} GB`;
+  const avail = document.getElementById('canirun-available');
+  if (avail) avail.textContent = `${Math.max(0, hw.vramGB - reserveGB)} GB`;
+
+  const models = window.MODELS_DATABASE.filter(m => {
+    if (filterArch !== 'all' && m.architecture !== filterArch) return false;
+    if (query && !m.name.toLowerCase().includes(query) && !m.family.toLowerCase().includes(query)) return false;
+    return true;
+  });
+
+  grid.innerHTML = models.length
+    ? models.map(model => renderCanIRunModelCard(model, hw, ctx, reserveGB)).join('')
+    : '<div class="col-span-full py-10 text-center text-xs text-slate-400">沒有符合條件的模型</div>';
+  renderIcons(grid);
 }
 
 function renderCanIRunModelCard(model, hw, ctx, reserveGB) {
-  // Best recommended quant for this hardware
-  const quantKeys = Object.keys(model.quantProfiles);
-  
-  // Find best quant that fits
-  let bestFitQuantKey = quantKeys[0];
-  for (let k of quantKeys) {
-    const res = calculateModelRunnability(model, k, hw, ctx, reserveGB);
-    if (res.status === 'smooth' || res.status === 'playable') {
-      bestFitQuantKey = k;
-      break;
-    }
-  }
-
-  const primaryResult = calculateModelRunnability(model, bestFitQuantKey, hw, ctx, reserveGB);
+  // 每個量化檔只算一次
+  const results = quantKeysBySize(model).map(k => calculateModelRunnability(model, k, hw, ctx, reserveGB));
+  // 推薦檔位：放得下（暢跑或良好）的最大檔；都放不下就取最小檔
+  const fitting = results.filter(r => r.status === 'smooth' || r.status === 'playable');
+  const primary = fitting.length ? fitting[fitting.length - 1] : results[0];
+  const pct = v => isKnown(v) ? Math.min(100, (v / hw.vramGB) * 100) : 0;
 
   return `
     <div class="bg-slate-900/80 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-5 shadow-lg transition duration-200 flex flex-col justify-between backdrop-blur-sm">
@@ -1252,52 +1253,50 @@ function renderCanIRunModelCard(model, hw, ctx, reserveGB) {
         <div class="flex items-start justify-between gap-2 mb-3">
           <div>
             <div class="flex items-center gap-1.5 flex-wrap">
-              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold ${model.architecture === 'MoE' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-300 border border-slate-700'}">
-                ${model.architecture} ${model.paramsActive !== model.paramsTotal ? `(${model.paramsActive}B 啟用 / ${model.paramsTotal}B 總量)` : `${model.paramsTotal}B`}
+              <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold ${model.architecture === 'MoE' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-300 border border-slate-700'}">
+                ${model.architecture} ${fmtParams(model, ' 啟用 / ')}
               </span>
-              <span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 font-mono">${model.license}</span>
+              <span class="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-400 border border-slate-700 font-mono">${model.license}</span>
             </div>
             <h3 class="text-base font-bold text-white mt-1.5">${model.name}</h3>
           </div>
-          <span class="px-2.5 py-1 rounded-lg text-xs font-bold font-mono border shrink-0 ${primaryResult.badgeColor}">
-            ${primaryResult.statusText.split(' ')[0]} ${bestFitQuantKey}
+          <span class="px-2.5 py-1 rounded-lg text-xs font-bold font-mono border shrink-0 ${primary.badgeColor}">
+            ${primary.statusText} ${primary.quantKey}
           </span>
         </div>
 
         <!-- Status Summary Banner -->
         <div class="p-3 rounded-xl bg-slate-950/80 border border-slate-800/80 mb-4">
           <div class="flex items-center justify-between text-xs mb-1.5">
-            <span class="text-slate-400">推薦量化檔位：<strong class="text-emerald-400 font-mono">${bestFitQuantKey}</strong></span>
-            <span class="text-slate-300 font-mono font-bold">${primaryResult.totalRequiredGB} GB <span class="text-slate-500 font-normal">/ ${hw.vramGB} GB</span></span>
-          </div>
-          
-          <!-- Memory Progress Bar -->
-          <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex mb-2">
-            <div class="bg-emerald-500 h-full" style="width: ${Math.min(100, (primaryResult.weightsGB / hw.vramGB) * 100)}%" title="模型權重: ${primaryResult.weightsGB} GB"></div>
-            <div class="bg-cyan-400 h-full" style="width: ${Math.min(100, (primaryResult.kvCacheGB / hw.vramGB) * 100)}%" title="KV 快取: ${primaryResult.kvCacheGB} GB"></div>
-            <div class="bg-purple-500 h-full" style="width: ${Math.min(100, (2.0 / hw.vramGB) * 100)}%" title="CUDA 執行期: 2.0 GB"></div>
+            <span class="text-slate-400">推薦量化檔位：<strong class="text-emerald-400 font-mono">${primary.quantKey}</strong></span>
+            <span class="text-slate-300 font-mono font-bold">${isKnown(primary.totalRequiredGB) ? primary.totalRequiredGB.toFixed(1) : '?'} GB <span class="text-slate-500 font-normal">/ ${hw.vramGB} GB</span></span>
           </div>
 
-          <div class="grid grid-cols-3 gap-1 text-[10px] text-slate-400 font-mono">
-            <div>權重: <span class="text-emerald-400">${primaryResult.weightsGB}G</span></div>
-            <div>KV 快取: <span class="text-cyan-400">${primaryResult.kvCacheGB}G</span></div>
-            <div>預估速度: <span class="text-amber-300">${primaryResult.estimatedDecodeSpeed}</span></div>
+          <!-- Memory Progress Bar -->
+          <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex mb-2" aria-hidden="true">
+            <div class="bg-emerald-500 h-full" style="width: ${pct(primary.weightsGB)}%"></div>
+            <div class="bg-cyan-400 h-full" style="width: ${pct(primary.kvCacheGB)}%"></div>
+            <div class="bg-purple-500 h-full" style="width: ${pct(RUNTIME_HEADROOM_GB)}%"></div>
           </div>
+
+          <div class="grid grid-cols-3 gap-1 text-[11px] text-slate-400 font-mono">
+            <div>權重: <span class="text-emerald-400">${isKnown(primary.weightsGB) ? `${primary.weightsGB.toFixed(1)}G` : '無資料'}</span></div>
+            <div>KV 快取: <span class="text-cyan-400">${isKnown(primary.kvCacheGB) ? `${primary.kvCacheGB.toFixed(2)}G` : '無資料'}</span></div>
+            <div>執行期: <span class="text-purple-300">${RUNTIME_HEADROOM_GB.toFixed(1)}G</span></div>
+          </div>
+          <div class="mt-2 text-[11px] text-slate-400">Decode 速度：${primary.speed.html}</div>
         </div>
 
         <!-- All Quant Profiles Comparison -->
         <div class="space-y-1.5 mb-4">
-          <span class="text-[11px] font-semibold text-slate-400 block">各量化版本佔用與速度：</span>
+          <span class="text-[11px] font-semibold text-slate-400 block">各量化版本佔用：</span>
           <div class="grid grid-cols-3 gap-1.5 text-xs">
-            ${quantKeys.map(k => {
-              const res = calculateModelRunnability(model, k, hw, ctx, reserveGB);
-              return `
-                <div class="p-2 rounded-lg border text-center font-mono ${res.badgeColor}">
-                  <div class="font-bold text-[11px]">${k}</div>
-                  <div class="text-[10px] opacity-80">${res.weightsGB} GB</div>
-                </div>
-              `;
-            }).join('')}
+            ${results.map(res => `
+              <div class="p-2 rounded-lg border text-center font-mono ${res.badgeColor}" title="${res.statusText}">
+                <div class="font-bold text-[11px] truncate">${res.quantKey}</div>
+                <div class="text-[11px] opacity-80">${isKnown(res.weightsGB) ? `${res.weightsGB.toFixed(1)} GB` : '無資料'}</div>
+              </div>
+            `).join('')}
           </div>
         </div>
       </div>
@@ -1313,72 +1312,56 @@ function renderCanIRunModelCard(model, hw, ctx, reserveGB) {
   `;
 }
 
+// 硬體是全站共用設定：換了就重繪目前分頁
 function setGlobalHardware(hwId) {
   state.canirun.selectedHardwareId = hwId;
-  const hw = getHardware(hwId);
-  renderWizard();
-  if (state.activeTab === 'canirun') renderCanIRun();
-  showToast(`已切換目標硬體為：${hw.name}`);
+  render();
+  showToast(`已切換目標硬體為：${getHardware(hwId).name}`);
 }
 
 function setCanIRunHardware(hwId) {
   state.canirun.selectedHardwareId = hwId;
-  renderCanIRun();
-  if (state.activeTab === 'wizard') renderWizard();
+  render();
 }
 
 function setCanIRunContext(val) {
   state.canirun.contextLength = parseInt(val, 10);
-  renderCanIRun();
+  updateCanIRunResults();
 }
 
 function setCanIRunReserve(val) {
   state.canirun.reserveCoexistGB = parseInt(val, 10);
-  renderCanIRun();
+  updateCanIRunResults();
 }
 
 function setCanIRunSearch(val) {
   state.canirun.searchQuery = val;
-  renderCanIRun();
+  updateCanIRunResults();
 }
 
 function setCanIRunArchFilter(val) {
   state.canirun.filterArchitecture = val;
-  renderCanIRun();
+  render();
 }
 
 // ----------------------------------------------------
 // Arena.ai Coding Leaderboard & Matrix
 // ----------------------------------------------------
+const LEADERBOARD_SORTS = [
+  ['arenaCodeElo', 'Arena Coding Elo (高到低)'],
+  ['arenaWebdevElo', 'Arena WebDev 分數'],
+  ['sweBench', 'SWE-bench Verified'],
+  ['liveCodeBench', 'LiveCodeBench'],
+  ['humanEval', 'HumanEval 正確率'],
+  ['jsonDisciplineScore', 'JSON 格式禮儀評分'],
+  ['paramsTotal', '總參數量 (Params)']
+];
+
 function renderLeaderboard() {
   const container = document.getElementById('leaderboard-container');
   if (!container) return;
-
   const lb = state.leaderboard;
-  let models = [...window.MODELS_DATABASE];
-
-  // Filters
-  if (lb.filterArch !== 'all') models = models.filter(m => m.architecture === lb.filterArch);
-  if (lb.filterLicense !== 'all') {
-    if (lb.filterLicense === 'commercial') models = models.filter(m => m.commercialAllowed);
-    else if (lb.filterLicense === 'apache-mit') models = models.filter(m => m.license === 'Apache 2.0' || m.license === 'MIT');
-  }
-  if (lb.filterTcGrade !== 'all') models = models.filter(m => m.tcGrade.startsWith(lb.filterTcGrade));
-  if (lb.filterDay16Only) models = models.filter(m => m.isDay16Featured);
-  if (lb.searchQuery) {
-    const q = lb.searchQuery.toLowerCase();
-    models = models.filter(m => m.name.toLowerCase().includes(q) || m.family.toLowerCase().includes(q));
-  }
-
-  // Sort
-  models.sort((a, b) => {
-    const valA = a[lb.sortBy];
-    const valB = b[lb.sortBy];
-    if (!isKnown(valA) && !isKnown(valB)) return 0;
-    if (!isKnown(valA)) return 1;
-    if (!isKnown(valB)) return -1;
-    return lb.sortDesc ? (valB - valA) : (valA - valB);
-  });
+  const asof = window.DATA_ASOF || {};
 
   container.innerHTML = `
     <!-- Top Filter Bar -->
@@ -1387,10 +1370,10 @@ function renderLeaderboard() {
         <div>
           <div class="flex items-center gap-2">
             <span class="text-xs font-semibold uppercase tracking-wider text-emerald-400">Arena.ai Coding 天梯榜</span>
-            <span class="px-2 py-0.5 rounded-full text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">Coding Elo & 實測維度整合</span>
+            <span class="px-2 py-0.5 rounded-full text-[11px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">Coding Elo & 實測維度整合</span>
           </div>
           <h2 class="text-xl font-bold text-white mt-1">開放權重程式碼模型競技場排行榜</h2>
-          <p class="text-[11px] text-slate-400 mt-1">Arena 快照：${(window.DATA_ASOF || {}).arena || '無資料'} ｜ 規格核對：${(window.DATA_ASOF || {}).specs || '無資料'} ｜ 查不到來源的數字顯示「無資料」</p>
+          <p class="text-[11px] text-slate-400 mt-1">Arena 快照：${asof.arena || '無資料'} ｜ 規格核對：${asof.specs || '無資料'} ｜ 查不到來源的數字顯示「無資料」</p>
         </div>
 
         <!-- Compare Action Button -->
@@ -1401,53 +1384,41 @@ function renderLeaderboard() {
 
       <!-- Filter Controls Grid -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-6 text-xs">
-        
-        <!-- Search -->
         <div>
-          <label class="block font-semibold text-slate-300 mb-1.5">搜尋模型名稱：</label>
-          <input type="text" placeholder="關鍵字搜尋..." value="${lb.searchQuery}" oninput="setLeaderboardSearch(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+          <label for="lb-search" class="block font-semibold text-slate-300 mb-1.5">搜尋模型名稱：</label>
+          <input id="lb-search" type="search" placeholder="關鍵字搜尋..." value="${escapeHtml(lb.searchQuery)}" oninput="setLeaderboardSearch(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500">
         </div>
 
-        <!-- Architecture -->
         <div>
-          <label class="block font-semibold text-slate-300 mb-1.5">架構 (Architecture)：</label>
-          <select onchange="setLeaderboardFilter('filterArch', this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
+          <label for="lb-arch" class="block font-semibold text-slate-300 mb-1.5">架構 (Architecture)：</label>
+          <select id="lb-arch" onchange="setLeaderboardFilter('filterArch', this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
             <option value="all" ${lb.filterArch === 'all' ? 'selected' : ''}>全部架構 (Dense + MoE)</option>
             <option value="Dense" ${lb.filterArch === 'Dense' ? 'selected' : ''}>密集模型 (Dense)</option>
             <option value="MoE" ${lb.filterArch === 'MoE' ? 'selected' : ''}>混合專家 (MoE)</option>
           </select>
         </div>
 
-        <!-- License Filter -->
         <div>
-          <label class="block font-semibold text-slate-300 mb-1.5">授權要求 (License)：</label>
-          <select onchange="setLeaderboardFilter('filterLicense', this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
+          <label for="lb-license" class="block font-semibold text-slate-300 mb-1.5">授權要求 (License)：</label>
+          <select id="lb-license" onchange="setLeaderboardFilter('filterLicense', this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
             <option value="all" ${lb.filterLicense === 'all' ? 'selected' : ''}>全部授權</option>
             <option value="commercial" ${lb.filterLicense === 'commercial' ? 'selected' : ''}>允許商用 (Commercial Ready)</option>
             <option value="apache-mit" ${lb.filterLicense === 'apache-mit' ? 'selected' : ''}>Apache 2.0 / MIT 寬鬆授權</option>
           </select>
         </div>
 
-        <!-- Sort By -->
         <div>
-          <label class="block font-semibold text-slate-300 mb-1.5">排序依據 (Sort By)：</label>
-          <select onchange="setLeaderboardSort(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
-            <option value="arenaCodeElo" ${lb.sortBy === 'arenaCodeElo' ? 'selected' : ''}>Arena Coding Elo (高到低)</option>
-            <option value="arenaWebdevElo" ${lb.sortBy === 'arenaWebdevElo' ? 'selected' : ''}>Arena WebDev 分數</option>
-            <option value="sweBench" ${lb.sortBy === 'sweBench' ? 'selected' : ''}>SWE-bench Verified</option>
-            <option value="liveCodeBench" ${lb.sortBy === 'liveCodeBench' ? 'selected' : ''}>LiveCodeBench</option>
-            <option value="humanEval" ${lb.sortBy === 'humanEval' ? 'selected' : ''}>HumanEval 正確率</option>
-            <option value="jsonDisciplineScore" ${lb.sortBy === 'jsonDisciplineScore' ? 'selected' : ''}>JSON 格式禮儀評分</option>
-            <option value="paramsTotal" ${lb.sortBy === 'paramsTotal' ? 'selected' : ''}>總參數量 (Params)</option>
+          <label for="lb-sort" class="block font-semibold text-slate-300 mb-1.5">排序依據 (Sort By)：</label>
+          <select id="lb-sort" onchange="setLeaderboardFilter('sortBy', this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500">
+            ${LEADERBOARD_SORTS.map(([k, label]) => `<option value="${k}" ${lb.sortBy === k ? 'selected' : ''}>${label}</option>`).join('')}
           </select>
         </div>
-
       </div>
 
       <!-- Quick Toggles -->
       <div class="mt-4 flex items-center gap-4 text-xs">
         <label class="flex items-center gap-2 cursor-pointer text-slate-300 select-none">
-          <input type="checkbox" ${lb.filterDay16Only ? 'checked' : ''} onchange="toggleLeaderboardDay16Only(this.checked)" class="rounded text-emerald-500 focus:ring-emerald-500 bg-slate-950 border-slate-700">
+          <input type="checkbox" ${lb.filterDay16Only ? 'checked' : ''} onchange="setLeaderboardFilter('filterDay16Only', this.checked)" class="rounded text-emerald-500 focus:ring-emerald-500 bg-slate-950 border-slate-700">
           <span>只顯示 Day 16 系列實測標竿模型</span>
         </label>
       </div>
@@ -1457,34 +1428,73 @@ function renderLeaderboard() {
     <div class="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
       <div class="overflow-x-auto">
         <table class="w-full text-left text-xs">
+          <caption class="sr-only">開放權重模型排行榜</caption>
           <thead class="bg-slate-950 text-slate-400 uppercase font-mono text-[11px] border-b border-slate-800">
             <tr>
-              <th class="py-3.5 px-4">對比</th>
-              <th class="py-3.5 px-4">排名 / 模型名稱</th>
-              <th class="py-3.5 px-4 text-center">Arena Coding Elo</th>
-              <th class="py-3.5 px-4 text-center">架構 / 參數</th>
-              <th class="py-3.5 px-4 text-center">繁中評級</th>
-              <th class="py-3.5 px-4 text-center">JSON 紀律</th>
-              <th class="py-3.5 px-4 text-center">KV 每 Token</th>
-              <th class="py-3.5 px-4">授權 (License)</th>
-              <th class="py-3.5 px-4 text-right">操作</th>
+              <th scope="col" class="py-3.5 px-4">對比</th>
+              <th scope="col" class="py-3.5 px-4">排名 / 模型名稱</th>
+              <th scope="col" class="py-3.5 px-4 text-center">Arena Coding Elo</th>
+              <th scope="col" class="py-3.5 px-4 text-center">架構 / 參數</th>
+              <th scope="col" class="py-3.5 px-4 text-center">繁中評級</th>
+              <th scope="col" class="py-3.5 px-4 text-center">JSON 紀律</th>
+              <th scope="col" class="py-3.5 px-4 text-center">KV 每 Token</th>
+              <th scope="col" class="py-3.5 px-4">授權 (License)</th>
+              <th scope="col" class="py-3.5 px-4 text-right">操作</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-slate-800/60 font-sans">
-            ${models.map((model, idx) => {
-              const isChecked = lb.selectedCompareIds.includes(model.id);
-              return `
+          <tbody id="leaderboard-rows" class="divide-y divide-slate-800/60 font-sans"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  updateLeaderboardRows();
+}
+
+function filteredLeaderboardModels() {
+  const lb = state.leaderboard;
+  let models = [...window.MODELS_DATABASE];
+  if (lb.filterArch !== 'all') models = models.filter(m => m.architecture === lb.filterArch);
+  if (lb.filterLicense === 'commercial') models = models.filter(m => m.commercialAllowed);
+  else if (lb.filterLicense === 'apache-mit') models = models.filter(m => m.license === 'Apache 2.0' || m.license === 'MIT');
+  if (lb.filterDay16Only) models = models.filter(m => m.isDay16Featured);
+  const q = lb.searchQuery.trim().toLowerCase();
+  if (q) models = models.filter(m => m.name.toLowerCase().includes(q) || m.family.toLowerCase().includes(q));
+
+  // 由高到低；無資料的排最後
+  models.sort((a, b) => {
+    const valA = a[lb.sortBy], valB = b[lb.sortBy];
+    if (!isKnown(valA) && !isKnown(valB)) return 0;
+    if (!isKnown(valA)) return 1;
+    if (!isKnown(valB)) return -1;
+    return valB - valA;
+  });
+  return models;
+}
+
+function updateLeaderboardRows() {
+  const tbody = document.getElementById('leaderboard-rows');
+  if (!tbody) return;
+  const lb = state.leaderboard;
+  const models = filteredLeaderboardModels();
+  let known = 0;
+
+  tbody.innerHTML = models.length ? models.map(model => {
+    const isChecked = lb.selectedCompareIds.includes(model.id);
+    // 名次只給排序欄位有資料的模型，而且是篩選後清單內的順位
+    const rank = isKnown(model[lb.sortBy]) ? `#${++known}` : '無';
+    return `
                 <tr class="hover:bg-slate-800/40 transition">
                   <td class="py-3.5 px-4">
-                    <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCompareSelection('${model.id}')" class="rounded text-indigo-500 focus:ring-indigo-500 bg-slate-950 border-slate-700 cursor-pointer">
+                    <input type="checkbox" aria-label="加入對比：${escapeHtml(model.name)}" ${isChecked ? 'checked' : ''} onchange="toggleCompareSelection('${model.id}', this)" class="rounded text-indigo-500 focus:ring-indigo-500 bg-slate-950 border-slate-700 cursor-pointer">
                   </td>
                   <td class="py-3.5 px-4">
                     <div class="flex items-center gap-2">
-                      <span class="font-mono font-bold text-slate-500 text-xs w-5">#${idx + 1}</span>
+                      <span class="font-mono font-bold text-slate-500 text-xs w-6">${rank}</span>
                       <div>
                         <div class="font-bold text-white flex items-center gap-1.5">
                           ${model.name}
-                          ${model.isDay16Featured ? '<span class="px-1.5 py-0.5 rounded text-[9px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Day 16</span>' : ''}
+                          ${benchmarksFor(model.id).length ? '<span class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">GB10 實測</span>' : ''}
+                          ${model.isDay16Featured ? '<span class="px-1.5 py-0.5 rounded text-[11px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Day 16</span>' : ''}
                         </div>
                         <div class="text-[11px] text-slate-400 font-mono">${model.family} ｜ 上下文: ${fmtContext(model.contextWindow)}</div>
                       </div>
@@ -1492,23 +1502,23 @@ function renderLeaderboard() {
                   </td>
                   <td class="py-3.5 px-4 text-center font-mono">
                     <span class="font-black text-emerald-400 text-sm">${fmt(model.arenaCodeElo)}</span>
-                    <span class="block text-[10px] text-slate-400">WebDev: ${fmt(model.arenaWebdevElo)}</span>
-                    <span class="block text-[10px] text-slate-400">SWE-V: ${fmt(model.sweBench, '%')}</span>
+                    <span class="block text-[11px] text-slate-400">WebDev: ${fmt(model.arenaWebdevElo)}</span>
+                    <span class="block text-[11px] text-slate-400">SWE-V: ${fmt(model.sweBench, '%')}</span>
                   </td>
                   <td class="py-3.5 px-4 text-center font-mono">
                     <span class="px-2 py-0.5 rounded text-[11px] font-bold ${model.architecture === 'MoE' ? 'bg-purple-500/20 text-purple-300' : 'bg-slate-800 text-slate-300'}">
                       ${model.architecture}
                     </span>
-                    <span class="block text-[10px] text-slate-400 mt-0.5">${model.paramsActive !== model.paramsTotal ? `${model.paramsActive}B / ${model.paramsTotal}B` : `${model.paramsTotal}B`}</span>
+                    <span class="block text-[11px] text-slate-400 mt-0.5">${fmtParams(model)}</span>
                   </td>
                   <td class="py-3.5 px-4 text-center">
                     <span class="font-bold text-amber-300 text-xs">${model.tcGrade}</span>
-                    <span class="block text-[10px] text-slate-400">${model.tcQuantMinBit}</span>
+                    <span class="block text-[11px] text-slate-400">${model.tcQuantMinBit}</span>
                   </td>
                   <td class="py-3.5 px-4 text-center font-mono">
                     <div class="inline-flex items-center gap-1">
                       <span class="font-bold text-slate-200">${fmt(model.jsonDisciplineScore)}</span>
-                      ${isKnown(model.jsonDisciplineScore) ? '<span class="text-[10px] text-slate-500">/100</span>' : ''}
+                      ${isKnown(model.jsonDisciplineScore) ? '<span class="text-[11px] text-slate-500">/100</span>' : ''}
                     </div>
                   </td>
                   <td class="py-3.5 px-4 text-center font-mono text-cyan-300">
@@ -1523,48 +1533,35 @@ function renderLeaderboard() {
                     </button>
                   </td>
                 </tr>
-              `;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+    `;
+  }).join('') : '<tr><td colspan="9" class="py-10 text-center text-slate-400">沒有符合條件的模型</td></tr>';
+  renderIcons(tbody);
 }
 
 function setLeaderboardSearch(val) {
   state.leaderboard.searchQuery = val;
-  renderLeaderboard();
+  updateLeaderboardRows();
 }
 
 function setLeaderboardFilter(key, val) {
   state.leaderboard[key] = val;
-  renderLeaderboard();
+  updateLeaderboardRows();
 }
 
-function setLeaderboardSort(val) {
-  state.leaderboard.sortBy = val;
-  renderLeaderboard();
-}
-
-function toggleLeaderboardDay16Only(val) {
-  state.leaderboard.filterDay16Only = val;
-  renderLeaderboard();
-}
-
-function toggleCompareSelection(id) {
+function toggleCompareSelection(id, el) {
   const arr = state.leaderboard.selectedCompareIds;
   const idx = arr.indexOf(id);
   if (idx >= 0) {
     arr.splice(idx, 1);
+  } else if (arr.length >= 4) {
+    if (el) el.checked = false;
+    showToast('最多同時對比 4 款模型');
+    return;
   } else {
-    if (arr.length >= 4) {
-      showToast('最多同時對比 4 款模型');
-      return;
-    }
     arr.push(id);
   }
-  renderLeaderboard();
+  const counter = document.getElementById('compare-count');
+  if (counter) counter.textContent = arr.length;
 }
 
 // ----------------------------------------------------
@@ -1574,14 +1571,16 @@ function renderStorageAdvisor() {
   const container = document.getElementById('storage-container');
   if (!container) return;
 
-  const model = getModel(state.storage.selectedModelId);
-  const quantKey = state.storage.selectedQuant;
-  const quant = model.quantProfiles[quantKey] || Object.values(model.quantProfiles)[0];
-  const ramGB = state.storage.systemRamGB;
+  const model = getModel(state.storage.selectedModelId) || window.MODELS_DATABASE[0];
+  const quantKey = model.quantProfiles[state.storage.selectedQuant] ? state.storage.selectedQuant : quantKeysBySize(model)[0];
+  const quant = model.quantProfiles[quantKey];
+  // 系統記憶體跟著全站選定的硬體走（獨立顯卡以顯存計，作為下限的保守估計）
+  const hw = getHardware(state.canirun.selectedHardwareId);
+  const ramGB = hw.vramGB;
   const loader = state.storage.loaderType;
 
   const modelSizeGB = quant.sizeGB;
-  const fitsInRam = modelSizeGB <= ramGB * 0.8; // 留 20% 給系統
+  const fitsInRam = isKnown(modelSizeGB) && modelSizeGB <= ramGB * 0.8; // 留 20% 給系統
 
   container.innerHTML = `
     <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 mb-8 backdrop-blur-md shadow-xl">
@@ -1596,8 +1595,8 @@ function renderStorageAdvisor() {
       <!-- Controls Grid -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-6 pt-6 text-xs">
         <div>
-          <label class="block font-semibold text-slate-300 mb-2">選擇欲評估模型：</label>
-          <select onchange="setStorageModel(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-medium focus:outline-none focus:border-emerald-500">
+          <label for="storage-model" class="block font-semibold text-slate-300 mb-2">選擇欲評估模型：</label>
+          <select id="storage-model" onchange="setStorageModel(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-medium focus:outline-none focus:border-emerald-500">
             ${window.MODELS_DATABASE.map(m => `
               <option value="${m.id}" ${m.id === model.id ? 'selected' : ''}>${m.name}</option>
             `).join('')}
@@ -1605,19 +1604,19 @@ function renderStorageAdvisor() {
         </div>
 
         <div>
-          <label class="block font-semibold text-slate-300 mb-2">選擇量化規格：</label>
-          <select onchange="setStorageQuant(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-medium focus:outline-none focus:border-emerald-500">
+          <label for="storage-quant" class="block font-semibold text-slate-300 mb-2">選擇量化規格：</label>
+          <select id="storage-quant" onchange="setStorageQuant(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-medium focus:outline-none focus:border-emerald-500">
             ${Object.keys(model.quantProfiles).map(k => `
-              <option value="${k}" ${k === quantKey ? 'selected' : ''}>${k} (${model.quantProfiles[k].sizeGB} GB)</option>
+              <option value="${k}" ${k === quantKey ? 'selected' : ''}>${k} (${isKnown(model.quantProfiles[k].sizeGB) ? `${model.quantProfiles[k].sizeGB} GB` : '無資料'})</option>
             `).join('')}
           </select>
         </div>
 
         <div>
-          <label class="block font-semibold text-slate-300 mb-2">推理 Loader 類型：</label>
-          <select onchange="setStorageLoader(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-medium focus:outline-none focus:border-emerald-500">
-            <option value="gguf-mmap" ${loader === 'gguf-mmap' ? 'selected' : ''}>llama.cpp / Ollama (GGUF mmap 磁碟依賴 73%)</option>
-            <option value="vllm" ${loader === 'vllm' ? 'selected' : ''}>vLLM / HuggingFace Safetensors (磁碟依賴 3%)</option>
+          <label for="storage-loader" class="block font-semibold text-slate-300 mb-2">推理 Loader 類型：</label>
+          <select id="storage-loader" onchange="setStorageLoader(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-medium focus:outline-none focus:border-emerald-500">
+            <option value="gguf-mmap" ${loader === 'gguf-mmap' ? 'selected' : ''}>llama.cpp / Ollama (GGUF mmap 吃掉磁碟能力 81%)</option>
+            <option value="vllm" ${loader === 'vllm' ? 'selected' : ''}>vLLM / HuggingFace Safetensors (只用到磁碟能力 3%)</option>
           </select>
         </div>
       </div>
@@ -1637,14 +1636,14 @@ function renderStorageAdvisor() {
 
         <div class="text-xs text-slate-300 leading-relaxed mb-4">
           ${fitsInRam ? `
-            <strong>放得進記憶體：</strong> 模型檔 (${modelSizeGB} GB) 完全可由實體記憶體容量容納。放置於 <strong>NAS 網路集中庫</strong> 的代價僅為冷啟動時多花 10~20 秒的一次回傳成本，載入後推論零效能損失。
+            <strong>放得進記憶體：</strong> 模型檔 (${modelSizeGB} GB) 完全可由 ${hw.name} 的記憶體容納。放置於 <strong>NAS 網路集中庫</strong> 的代價僅為冷啟動時多花 10~20 秒的一次回傳成本，載入後推論零效能損失。
           ` : `
-            <strong>放不進記憶體：</strong> 絕不要放 NAS！執行中每一次頁面回收 (Page Reclaim) 再讀取都走網路 I/O，實測總載入慢 <strong>3.8 倍</strong>，連純 CPU 階段都被拖垮。<strong>必須存放於本機高速 NVMe SSD！</strong>
+            <strong>放不進記憶體：</strong> 別放 NAS。實測模型大小逼近可用記憶體時，走 NFS 的總載入慢了 <strong>3.8 倍</strong>，而且慢的不只是讀檔，連名義上純 CPU 的階段都被拖慢，因為記憶體裝不下模型加上載入過程的中間副本，頁面回收後再讀都走網路。<strong>請放本機 NVMe SSD。</strong>
           `}
         </div>
 
         <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-400">
-          模型大小: <span class="text-white">${modelSizeGB} GB</span> ｜ 系統可用 RAM: <span class="text-emerald-400">${(ramGB * 0.8).toFixed(1)} GB</span>
+          模型大小: <span class="text-white">${fmt(modelSizeGB, ' GB')}</span> ｜ ${hw.name} 可用記憶體（扣 20% 給系統）: <span class="text-emerald-400">${(ramGB * 0.8).toFixed(1)} GB</span>
         </div>
       </div>
 
@@ -1653,15 +1652,15 @@ function renderStorageAdvisor() {
         <div class="flex items-center justify-between mb-4">
           <span class="text-xs font-bold font-mono text-cyan-400">第二問：你的 loader 吃儲存速度嗎？</span>
           <span class="text-xs px-2.5 py-1 rounded-full font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
-            ${loader === 'gguf-mmap' ? 'mmap 實力 73%' : 'vLLM 實力 3%'}
+            ${loader === 'gguf-mmap' ? 'mmap 吃掉 81%' : 'vLLM 只用 3%'}
           </span>
         </div>
 
         <div class="text-xs text-slate-300 leading-relaxed mb-4">
           ${loader === 'gguf-mmap' ? `
-            <strong>GGUF mmap 機制：</strong> 磁碟實力與載入速度同數量級（高達 73% 相關）。升級至 PCIe 4.0/5.0 NVMe SSD 將直接體現在模型秒開啟動上！
+            <strong>GGUF mmap 機制：</strong> 同一顆碟、同一個 readahead 設定下，mmap 載入跑到 4,351 MB/s，吃掉磁碟能力的 81%，載入速度與磁碟同數量級。換更快的 NVMe 會直接反映在啟動時間上。
           ` : `
-            <strong>vLLM / Safetensors 重構：</strong> 權重位元組除以載入秒數與磁碟差一個數量級（僅 3% 相關）。搬去更貴的高速碟不會有感，運算主要瓶頸在權重反量化與 GPU 傳輸。
+            <strong>vLLM / Safetensors 重構：</strong> 同一顆碟上 vLLM 載入只跑到 161 MB/s，用掉磁碟能力的 3%，與磁碟差一個數量級。瓶頸在它自己的反序列化，搬去更貴的高速碟不會有感。
           `}
         </div>
 
@@ -1687,7 +1686,7 @@ function renderStorageAdvisor() {
       <div class="space-y-3 font-mono text-xs">
         <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
           <code class="text-emerald-300"># Linux 查看與調高 NVMe readahead (由 128KB 升至 2MB)<br>sudo blockdev --getra /dev/nvme0n1<br>sudo blockdev --setra 4096 /dev/nvme0n1</code>
-          <button onclick="copyText('sudo blockdev --setra 4096 /dev/nvme0n1')" class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:text-white text-xs font-sans">複製</button>
+          <button onclick="copyText('sudo blockdev --setra 4096 /dev/nvme0n1')" aria-label="複製 readahead 指令" class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:text-white text-xs font-sans">複製</button>
         </div>
       </div>
     </div>
@@ -1696,144 +1695,262 @@ function renderStorageAdvisor() {
 
 function setStorageModel(val) {
   state.storage.selectedModelId = val;
-  renderStorageAdvisor();
+  // 換模型時重設量化檔，避免沿用上一款模型才有的檔位
+  state.storage.selectedQuant = quantKeysBySize(getModel(val))[0];
+  render();
 }
 
 function setStorageQuant(val) {
   state.storage.selectedQuant = val;
-  renderStorageAdvisor();
+  render();
 }
 
 function setStorageLoader(val) {
   state.storage.loaderType = val;
-  renderStorageAdvisor();
+  render();
 }
 
 // ----------------------------------------------------
 // Radar Chart & Multi-metric Comparison
 // ----------------------------------------------------
-function renderRadarChart() {
-  const canvas = document.getElementById('radar-chart-canvas');
-  if (!canvas) return;
-
-  const selectedModels = state.radar.selectedModelIds.map(id => getModel(id)).filter(Boolean);
-
-  if (state.radar.chartInstance) {
-    state.radar.chartInstance.destroy();
+// Chart.js 只有雷達分頁用得到，第一次打開時才載入
+let _chartJsPromise = null;
+function loadChartJs() {
+  if (window.Chart) return Promise.resolve();
+  if (!_chartJsPromise) {
+    _chartJsPromise = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = 'vendor/chart.umd.min.js';
+      el.onload = resolve;
+      el.onerror = () => { _chartJsPromise = null; reject(new Error('Chart.js 載入失敗')); };
+      document.head.appendChild(el);
+    });
   }
+  return _chartJsPromise;
+}
 
-  const colors = [
-    { border: themeColor('emerald-500'), bg: themeColor('emerald-500', 0.22) },
-    { border: themeColor('indigo-500'), bg: themeColor('indigo-500', 0.22) },
-    { border: themeColor('cyan-500'), bg: themeColor('cyan-500', 0.22) },
-    { border: themeColor('amber-500'), bg: themeColor('amber-500', 0.22) }
-  ];
+const RADAR_LABELS = [
+  '長輸入 Prefill 效能',
+  '長輸出 Decode 速度',
+  '繁體中文語感與耐受度',
+  'JSON 格式禮儀與紀律',
+  'KV 快取省電度 (低佔用)',
+  '商用授權自由度',
+  '推理引擎主線成熟度'
+];
 
-  const datasets = selectedModels.map((m, idx) => {
+function radarDatasets() {
+  const colors = ['emerald-500', 'indigo-500', 'cyan-500', 'amber-500'];
+  const tcScores = { 'S': 98, 'S-': 92, 'A': 88, 'A-': 82, 'B+': 75 };
+  return state.radar.selectedModelIds.map(id => getModel(id)).filter(Boolean).map((m, idx) => {
     const c = colors[idx % colors.length];
-    
-    // Normalize metrics 0~100
-    const prefillScore = m.speedPrefillScore;
-    const decodeScore = m.workloadFit.decode * 20;
-    const tcScore = m.tcGrade === '未評' ? null : m.tcGrade === 'S' ? 98 : m.tcGrade === 'S-' ? 92 : m.tcGrade === 'A' ? 88 : m.tcGrade === 'A-' ? 82 : m.tcGrade === 'B+' ? 75 : 65;
-    const jsonScore = isKnown(m.jsonDisciplineScore) ? m.jsonDisciplineScore : null; // 無資料的軸留空
-    const kvEfficiency = Math.max(10, 100 - (m.kvPerTokKB * 2.2)); // Lower KB is better
+    // 各軸正規化到 0~100；無資料的軸留空，不畫成 0
+    const tcScore = m.tcGrade === '未評' ? null : (tcScores[m.tcGrade] || 65);
+    const kvEfficiency = isKnown(m.kvPerTokKB) ? Math.max(10, 100 - (m.kvPerTokKB * 2.2)) : null; // KB 越低越好
     const licenseScore = m.license === 'MIT' ? 100 : m.license === 'Apache 2.0' ? 95 : m.commercialAllowed ? 80 : 50;
     const ecosystemScore = m.engineSupport.includes('Experimental') ? 40 : 95;
-
     return {
       label: [m.name, !isKnown(m.jsonDisciplineScore) && 'JSON 紀律無資料', m.tcGrade === '未評' && '繁中未評'].filter(Boolean).join('｜'),
-      data: [prefillScore, decodeScore, tcScore, jsonScore, kvEfficiency, licenseScore, ecosystemScore],
-      borderColor: c.border,
-      backgroundColor: c.bg,
+      data: [m.speedPrefillScore, m.workloadFit.decode * 20, tcScore, m.jsonDisciplineScore, kvEfficiency, licenseScore, ecosystemScore],
+      borderColor: themeColor(c),
+      backgroundColor: themeColor(c, 0.22),
       borderWidth: 2,
-      pointBackgroundColor: c.border,
+      pointBackgroundColor: themeColor(c),
       pointRadius: 4,
-      spanGaps: true // 無資料的軸跳過，不畫成 0
+      spanGaps: true
     };
   });
+}
 
-  const ctx = canvas.getContext('2d');
-  state.radar.chartInstance = new Chart(ctx, {
-    type: 'radar',
-    data: {
-      labels: [
-        '長輸入 Prefill 效能',
-        '長輸出 Decode 速度',
-        '繁體中文語感與耐受度',
-        'JSON 格式禮儀與紀律',
-        'KV 快取省電度 (低佔用)',
-        '商用授權自由度',
-        '推理引擎主線成熟度'
-      ],
-      datasets
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        r: {
-          angleLines: { color: themeColor('slate-500', 0.28) },
-          grid: { color: themeColor('slate-500', 0.28) },
-          pointLabels: {
-            color: themeColor('slate-400'),
-            font: { size: 11, weight: 'bold' }
-          },
-          ticks: {
-            display: false,
-            max: 100,
-            min: 0
-          }
-        }
-      },
-      plugins: {
-        legend: {
-          labels: {
-            color: themeColor('slate-100'),
-            font: { size: 12, weight: 'bold' }
-          }
-        }
+function radarOptions() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      r: {
+        min: 0,
+        max: 100,
+        angleLines: { color: themeColor('slate-500', 0.28) },
+        grid: { color: themeColor('slate-500', 0.28) },
+        pointLabels: { color: themeColor('slate-400'), font: { size: 11, weight: 'bold' } },
+        ticks: { display: false, stepSize: 20 }
       }
+    },
+    plugins: {
+      legend: { labels: { color: themeColor('slate-100'), font: { size: 12, weight: 'bold' } } }
     }
-  });
+  };
+}
 
-  // Render checkboxes
-  const togglesContainer = document.getElementById('radar-model-toggles');
-  if (togglesContainer) {
-    togglesContainer.innerHTML = window.MODELS_DATABASE.map(m => {
-      const isChecked = state.radar.selectedModelIds.includes(m.id);
-      return `
-        <label class="p-2.5 rounded-xl border text-xs cursor-pointer flex items-center justify-between transition ${
-          isChecked ? 'bg-slate-800 border-emerald-500/50 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900'
-        }">
-          <div class="flex items-center gap-2 truncate">
-            <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleRadarModel('${m.id}')" class="rounded text-emerald-500 focus:ring-emerald-500 bg-slate-900 border-slate-700">
-            <span class="font-bold truncate">${m.name}</span>
-          </div>
-          <span class="text-[10px] font-mono text-slate-500">${m.architecture}</span>
-        </label>
-      `;
-    }).join('');
+// 圖表只建立一次，之後換模型或換主題都用 update()
+async function renderRadarChart() {
+  renderRadarToggles();
+  const canvas = document.getElementById('radar-chart-canvas');
+  if (!canvas) return;
+  try {
+    await loadChartJs();
+  } catch (e) {
+    showToast('雷達圖元件載入失敗，請重新整理頁面');
+    return;
+  }
+  const chart = state.radar.chartInstance;
+  if (chart) {
+    chart.data.datasets = radarDatasets();
+    chart.options = radarOptions();
+    chart.update();
+  } else {
+    state.radar.chartInstance = new Chart(canvas.getContext('2d'), {
+      type: 'radar',
+      data: { labels: RADAR_LABELS, datasets: radarDatasets() },
+      options: radarOptions()
+    });
   }
 }
 
-function toggleRadarModel(id) {
+function renderRadarToggles() {
+  const togglesContainer = document.getElementById('radar-model-toggles');
+  if (!togglesContainer) return;
+  togglesContainer.innerHTML = window.MODELS_DATABASE.map(m => {
+    const isChecked = state.radar.selectedModelIds.includes(m.id);
+    return `
+      <label class="p-2.5 rounded-xl border text-xs cursor-pointer flex items-center justify-between transition ${
+        isChecked ? 'bg-slate-800 border-emerald-500/50 text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900'
+      }">
+        <div class="flex items-center gap-2 truncate">
+          <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleRadarModel('${m.id}', this)" class="rounded text-emerald-500 focus:ring-emerald-500 bg-slate-900 border-slate-700">
+          <span class="font-bold truncate">${m.name}</span>
+        </div>
+        <span class="text-[11px] font-mono text-slate-500">${m.architecture}</span>
+      </label>
+    `;
+  }).join('');
+}
+
+function toggleRadarModel(id, el) {
   const arr = state.radar.selectedModelIds;
   const idx = arr.indexOf(id);
   if (idx >= 0) {
     if (arr.length <= 1) {
+      if (el) el.checked = true;
       showToast('請至少保留一款模型進行展示');
       return;
     }
     arr.splice(idx, 1);
   } else {
     if (arr.length >= 4) {
+      if (el) el.checked = false;
       showToast('雷達圖最多同時繪製 4 款模型');
       return;
     }
     arr.push(id);
   }
   renderRadarChart();
+}
+
+// ----------------------------------------------------
+// GB10 實測紀錄（作者單機與雙機）
+// ----------------------------------------------------
+const BENCH_PLATFORMS = [
+  ['all', '全部'],
+  ['dual-gb10', '雙機 GB10（TP=2）'],
+  ['nvidia-gb10', '單機 GB10']
+];
+
+function renderBenchmarks() {
+  const container = document.getElementById('bench-container');
+  if (!container) return;
+  const platform = state.bench.platform;
+  const rows = (window.LOCAL_BENCHMARKS || []).filter(b => platform === 'all' || b.platform === platform);
+  const asof = (window.DATA_ASOF || {}).local;
+
+  // 依模型分組，模型順序照第一次出現
+  const groups = [];
+  rows.forEach(b => {
+    let g = groups.find(x => x.modelId === b.modelId);
+    if (!g) groups.push(g = { modelId: b.modelId, rows: [] });
+    g.rows.push(b);
+  });
+
+  const aggHtml = b => b.aggregate
+    ? Object.entries(b.aggregate).map(([n, v]) => `<span class="whitespace-nowrap">${n} 路 <strong class="text-slate-200">${v}</strong></span>`).join('<br>')
+    : fmt(null);
+
+  container.innerHTML = `
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 mb-8 shadow-xl">
+      <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+        <div>
+          <span class="text-xs font-semibold uppercase tracking-wider text-emerald-400">GB10 實測紀錄</span>
+          <h2 class="text-xl font-bold text-white mt-1">作者單機與雙機 GB10 的實測成績</h2>
+          <p class="text-xs text-slate-400 mt-2 leading-relaxed max-w-3xl">
+            雙機是兩台 GB10（DGX Spark 同級）以 ConnectX-7 直連、跨機張量並行（TP=2）。Decode 是單一請求的生成速度，併發欄是 N 路同時請求的合計吞吐，Prefill 是提示處理速度，單位都是 tok/s。
+            同一列的數字出自同一套腳本；不同引擎的 token 切法不同，跨引擎只看量級，不要直接相減。${asof ? `最新一筆 ${asof}。` : ''}
+          </p>
+        </div>
+        <div class="flex items-center gap-2 text-xs" role="group" aria-label="平台篩選">
+          ${BENCH_PLATFORMS.map(([id, label]) => `
+            <button onclick="setBenchPlatform('${id}')" aria-pressed="${platform === id}" class="px-3 py-1.5 rounded-lg border font-medium transition ${
+              platform === id ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+            }">${label}</button>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+
+    <div class="space-y-6">
+      ${groups.map(g => {
+        const m = getModel(g.modelId);
+        return `
+          <section class="bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl overflow-hidden" aria-labelledby="bench-${g.modelId}">
+            <div class="px-5 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <h3 id="bench-${g.modelId}" class="text-base font-bold text-white">${m ? m.name : g.modelId}</h3>
+              ${m ? `<button onclick="openModelDetailModal('${m.id}')" class="text-xs text-emerald-400 hover:underline">模型詳情 &rarr;</button>` : ''}
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-slate-950 text-slate-400 text-[11px]">
+                  <tr>
+                    <th scope="col" class="py-2.5 px-4">日期／平台</th>
+                    <th scope="col" class="py-2.5 px-4">引擎與權重</th>
+                    <th scope="col" class="py-2.5 px-4 text-right">Decode</th>
+                    <th scope="col" class="py-2.5 px-4 text-right">併發合計</th>
+                    <th scope="col" class="py-2.5 px-4 text-right">Prefill</th>
+                    <th scope="col" class="py-2.5 px-4">品質檢查與備註</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/60 align-top">
+                  ${g.rows.map(b => `
+                    <tr>
+                      <td class="py-3 px-4 font-mono whitespace-nowrap">
+                        <span class="text-slate-200">${b.date}</span>
+                        <span class="block text-[11px] ${b.platform === 'dual-gb10' ? 'text-indigo-300' : 'text-slate-400'}">${b.platform === 'dual-gb10' ? '雙機' : '單機'}・${b.topology}</span>
+                      </td>
+                      <td class="py-3 px-4">
+                        <span class="text-slate-200">${escapeHtml(b.engine)}</span>
+                        <span class="block text-[11px] text-slate-400 break-all">${escapeHtml(b.weights)}${b.quantKey ? `（${escapeHtml(b.quantKey)}）` : ''}</span>
+                      </td>
+                      <td class="py-3 px-4 text-right font-mono text-sm font-bold text-emerald-400 whitespace-nowrap">${fmt(b.decode)}</td>
+                      <td class="py-3 px-4 text-right font-mono text-[11px] text-slate-400">${aggHtml(b)}</td>
+                      <td class="py-3 px-4 text-right font-mono whitespace-nowrap">${b.prefill ? `<span class="text-cyan-300">${formatNumber(b.prefill.tokPerSec)}</span><span class="block text-[11px] text-slate-500">${formatNumber(b.prefill.promptTokens)} tok 提示</span>` : fmt(null)}</td>
+                      <td class="py-3 px-4 text-slate-300 leading-relaxed min-w-[260px]">
+                        ${b.quality && b.quality.length ? `<ul class="list-disc pl-4 space-y-0.5">${b.quality.map(q => `<li>${escapeHtml(q)}</li>`).join('')}</ul>` : ''}
+                        ${b.notes ? `<p class="text-[11px] text-slate-400 mt-1">${escapeHtml(b.notes)}</p>` : ''}
+                        <p class="text-[11px] text-slate-500 mt-1">來源：${/^https?:\/\//.test(b.source) ? `<a href="${escapeHtml(b.source)}" target="_blank" rel="noopener" class="text-emerald-400 hover:underline break-all">${escapeHtml(b.source)}</a>` : escapeHtml(b.source)}</p>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function setBenchPlatform(val) {
+  state.bench.platform = val;
+  render();
 }
 
 // ----------------------------------------------------
@@ -1854,7 +1971,7 @@ function renderDay16() {
             <span class="px-3 py-1 rounded-full text-xs font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 inline-block">
               Day 16 核心精華筆記
             </span>
-            <a href="${data.articleUrl}" target="_blank" class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 inline-flex items-center gap-1 hover:bg-emerald-500/30 transition">
+            <a href="${data.articleUrl}" target="_blank" rel="noopener" class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 inline-flex items-center gap-1 hover:bg-emerald-500/30 transition">
               <i data-lucide="newspaper" class="w-3.5 h-3.5"></i> iThome 鐵人賽原文專欄 <i data-lucide="external-link" class="w-3 h-3"></i>
             </a>
           </div>
@@ -1866,7 +1983,7 @@ function renderDay16() {
           </p>
         </div>
 
-        <a href="${data.articleUrl}" target="_blank" class="px-5 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-xs shadow-xl shadow-emerald-950/50 flex items-center justify-center gap-2 transition shrink-0 self-start md:self-center">
+        <a href="${data.articleUrl}" target="_blank" rel="noopener" class="px-5 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-xs shadow-xl shadow-emerald-950/50 flex items-center justify-center gap-2 transition shrink-0 self-start md:self-center">
           <i data-lucide="book-open" class="w-4 h-4"></i> 前往 iThome 閱讀全文 <i data-lucide="arrow-up-right" class="w-4 h-4"></i>
         </a>
       </div>
@@ -1874,7 +1991,7 @@ function renderDay16() {
 
     <!-- Three Big Myths Grid -->
     <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2">
-      <i data-lucide="alert-circle" class="w-5 h-5 text-amber-400"></i> 為什麼不能只看排行榜？三大迷思現形
+      <i data-lucide="circle-alert" class="w-5 h-5 text-amber-400"></i> 為什麼不能只看排行榜？三大迷思現形
     </h2>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
       ${data.threeMyths.map(m => `
@@ -1931,12 +2048,12 @@ function openModelDetailModal(modelId) {
     <div class="flex items-start justify-between pb-4 border-b border-slate-800">
       <div>
         <div class="flex items-center gap-2 mb-1">
-          <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">${model.family}</span>
-          <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300">${model.license}</span>
+          <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">${model.family}</span>
+          <span class="px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 text-slate-300">${model.license}</span>
         </div>
-        <h2 class="text-xl font-bold text-white">${model.name}</h2>
+        <h2 id="model-detail-title" class="text-xl font-bold text-white">${model.name}</h2>
       </div>
-      <button onclick="closeModal('model-detail-modal')" class="text-slate-400 hover:text-white text-lg p-1">
+      <button onclick="closeModal('model-detail-modal')" aria-label="關閉" class="text-slate-400 hover:text-white text-lg p-1">
         <i data-lucide="x" class="w-5 h-5"></i>
       </button>
     </div>
@@ -1953,24 +2070,24 @@ function openModelDetailModal(modelId) {
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
           <span class="text-slate-500 block text-[11px]">參數量級</span>
-          <span class="font-bold text-white text-sm">${model.paramsTotal}B</span>
-          <span class="text-[10px] text-slate-400 block">啟用: ${model.paramsActive}B</span>
+          <span class="font-bold text-white text-sm">${fmt(model.paramsTotal, 'B')}</span>
+          <span class="text-[11px] text-slate-400 block">啟用: ${fmt(model.paramsActive, 'B')}</span>
         </div>
         <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
           <span class="text-slate-500 block text-[11px]">Arena Coding Elo</span>
           <span class="font-bold text-emerald-400 text-sm font-mono">${fmt(model.arenaCodeElo)}</span>
-          <span class="text-[10px] text-slate-400 block">WebDev: ${fmt(model.arenaWebdevElo)}</span>
-          <span class="text-[10px] text-slate-400 block">SWE-bench V: ${fmt(model.sweBench, '%')}｜LCB: ${fmt(model.liveCodeBench)}｜HumanEval: ${fmt(model.humanEval, '%')}</span>
+          <span class="text-[11px] text-slate-400 block">WebDev: ${fmt(model.arenaWebdevElo)}</span>
+          <span class="text-[11px] text-slate-400 block">SWE-bench V: ${fmt(model.sweBench, '%')}｜LCB: ${fmt(model.liveCodeBench)}｜HumanEval: ${fmt(model.humanEval, '%')}</span>
         </div>
         <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
           <span class="text-slate-500 block text-[11px]">繁中評級 / 最低位元</span>
           <span class="font-bold text-amber-300 text-sm">${model.tcGrade}</span>
-          <span class="text-[10px] text-slate-400 block">${model.tcQuantMinBit}</span>
+          <span class="text-[11px] text-slate-400 block">${model.tcQuantMinBit}</span>
         </div>
         <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
           <span class="text-slate-500 block text-[11px]">KV Cache 每 Token</span>
           <span class="font-bold text-cyan-300 text-sm font-mono">${fmt(model.kvPerTokKB, ' KB')}</span>
-          <span class="text-[10px] text-slate-400 block">考卷: ${fmt(model.examScore)}</span>
+          <span class="text-[11px] text-slate-400 block">考卷: ${fmt(model.examScore)}</span>
         </div>
       </div>
 
@@ -1986,6 +2103,11 @@ function openModelDetailModal(modelId) {
           ${model.jsonRecheckPending ? `<p class="text-amber-300 leading-relaxed mt-1">待重測：${model.jsonRecheckPending}</p>` : ''}
         </div>
         <div>
+          <h4 class="font-bold text-white mb-1">解碼速度：</h4>
+          <p class="text-slate-300 leading-relaxed">${escapeHtml(model.speedDecodeRating || '無資料')}</p>
+          ${benchmarksFor(model.id).length ? `<button onclick="closeModal('model-detail-modal'); setTab('bench')" class="mt-1 text-emerald-400 hover:underline">查看 ${benchmarksFor(model.id).length} 筆 GB10 實測紀錄 &rarr;</button>` : ''}
+        </div>
+        <div>
           <h4 class="font-bold text-white mb-1">推理引擎與生態支援狀態：</h4>
           <p class="text-slate-300 leading-relaxed">${model.engineNotes}</p>
         </div>
@@ -1996,7 +2118,7 @@ function openModelDetailModal(modelId) {
         <div>
           <h4 class="font-bold text-white mb-1">資料來源：</h4>
           <div class="text-[11px] leading-relaxed space-y-0.5">${sourcesHtml(model)}</div>
-          <p class="text-[10px] text-slate-500 mt-1">${model.editorial || '繁中評級、工作負載適配與 Prefill 分數為編輯評分'}，不是量測值。KV 為 BF16、只計全注意力層，依 config 推導。</p>
+          <p class="text-[11px] text-slate-500 mt-1">${model.editorial || '繁中評級、工作負載適配與 Prefill 分數為編輯評分'}，不是量測值。KV 為 BF16、只計全注意力層，依 config 推導。</p>
         </div>
       </div>
 
@@ -2010,16 +2132,16 @@ function openModelDetailModal(modelId) {
                 <th class="p-2.5">量化版本</th>
                 <th class="p-2.5">位元 (bpw)</th>
                 <th class="p-2.5">權重體積</th>
-                <th class="p-2.5">預估運行速度</th>
+                <th class="p-2.5">速度（實測或建議硬體）</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800 font-sans">
               ${Object.entries(model.quantProfiles).map(([k, v]) => `
                 <tr>
                   <td class="p-2.5 font-bold text-emerald-400 font-mono">${k}</td>
-                  <td class="p-2.5 text-slate-400 font-mono">${v.bpw}</td>
-                  <td class="p-2.5 text-white font-mono">${v.sizeGB} GB</td>
-                  <td class="p-2.5 text-slate-300">${v.recSpeedGpu}</td>
+                  <td class="p-2.5 text-slate-400 font-mono">${fmt(v.bpw)}</td>
+                  <td class="p-2.5 text-white font-mono">${fmt(v.sizeGB, ' GB')}</td>
+                  <td class="p-2.5 text-slate-300">${fmt(v.recSpeedGpu)}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2029,8 +2151,7 @@ function openModelDetailModal(modelId) {
     </div>
   `;
 
-  modal.classList.remove('hidden');
-  if (window.lucide) lucide.createIcons();
+  openModal('model-detail-modal');
 }
 
 function openCompareModal() {
@@ -2047,9 +2168,9 @@ function openCompareModal() {
     <div class="flex items-start justify-between pb-4 border-b border-slate-800">
       <div>
         <span class="text-xs font-semibold text-indigo-400 uppercase">橫向對比矩陣</span>
-        <h2 class="text-xl font-bold text-white">模型全維度 PK (${models.length} 款)</h2>
+        <h2 id="compare-modal-title" class="text-xl font-bold text-white">模型全維度 PK (${models.length} 款)</h2>
       </div>
-      <button onclick="closeModal('compare-modal')" class="text-slate-400 hover:text-white text-lg p-1">
+      <button onclick="closeModal('compare-modal')" aria-label="關閉" class="text-slate-400 hover:text-white text-lg p-1">
         <i data-lucide="x" class="w-5 h-5"></i>
       </button>
     </div>
@@ -2069,7 +2190,7 @@ function openCompareModal() {
         <tbody class="divide-y divide-slate-800 text-slate-300 font-sans">
           <tr>
             <td class="p-3 font-semibold text-slate-400 bg-slate-950">架構 / 參數量</td>
-            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono">${m.architecture} (${m.paramsActive}B / ${m.paramsTotal}B)</td>`).join('')}
+            ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono">${m.architecture} (${fmtParams(m)})</td>`).join('')}
           </tr>
           <tr>
             <td class="p-3 font-semibold text-slate-400 bg-slate-950">Arena Coding Elo</td>
@@ -2096,6 +2217,10 @@ function openCompareModal() {
             ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono text-cyan-300 font-bold">${fmt(m.kvPerTokKB, ' KB')}</td>`).join('')}
           </tr>
           <tr>
+            <td class="p-3 font-semibold text-slate-400 bg-slate-950">解碼速度</td>
+            ${models.map(m => `<td class="p-3 border-l border-slate-800 text-[11px]">${escapeHtml(m.speedDecodeRating || '無資料')}</td>`).join('')}
+          </tr>
+          <tr>
             <td class="p-3 font-semibold text-slate-400 bg-slate-950">商用授權條款</td>
             ${models.map(m => `<td class="p-3 border-l border-slate-800 font-mono ${m.commercialAllowed ? 'text-emerald-400' : 'text-amber-400'}">${m.license}</td>`).join('')}
           </tr>
@@ -2112,18 +2237,71 @@ function openCompareModal() {
     </div>
   `;
 
+  openModal('compare-modal');
+}
+
+// ----------------------------------------------------
+// Modal：Esc 與點背景關閉、焦點鎖在對話框內、關閉後焦點回到原按鈕
+// ----------------------------------------------------
+let _modalReturnFocus = null;
+
+function focusableIn(el) {
+  return [...el.querySelectorAll('a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(x => x.offsetParent !== null);
+}
+
+function openModal(id) {
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  if (!modal.classList.contains('hidden')) {
+    renderIcons(modal);
+    return;
+  }
+  _modalReturnFocus = document.activeElement;
   modal.classList.remove('hidden');
-  if (window.lucide) lucide.createIcons();
+  document.body.classList.add('overflow-hidden');
+  renderIcons(modal);
+  const first = focusableIn(modal)[0];
+  if (first) first.focus();
 }
 
 function closeModal(id) {
   const modal = document.getElementById(id);
-  if (modal) modal.classList.add('hidden');
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  document.body.classList.remove('overflow-hidden');
+  if (_modalReturnFocus && document.contains(_modalReturnFocus)) _modalReturnFocus.focus();
+  _modalReturnFocus = null;
 }
 
+function openModalId() {
+  const open = document.querySelector('.app-modal:not(.hidden)');
+  return open ? open.id : null;
+}
+
+document.addEventListener('keydown', e => {
+  const id = openModalId();
+  if (!id) return;
+  if (e.key === 'Escape') {
+    closeModal(id);
+    return;
+  }
+  if (e.key === 'Tab') {
+    const items = focusableIn(document.getElementById(id));
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+
+// 點對話框外的背景關閉
+document.addEventListener('click', e => {
+  if (e.target.classList && e.target.classList.contains('app-modal')) closeModal(e.target.id);
+});
+
 function copyText(txt) {
-  navigator.clipboard.writeText(txt);
-  showToast('已複製至剪貼簿！');
+  copyToClipboard(txt, '已複製至剪貼簿！');
 }
 
 // ----------------------------------------------------
@@ -2140,27 +2318,23 @@ function themeColor(token, alpha = 1) {
 
 function applyTheme(theme) {
   const root = document.documentElement;
-  if (theme === 'light') root.classList.remove('dark');
-  else root.classList.add('dark');
+  root.classList.toggle('dark', theme !== 'light');
 
   try { localStorage.setItem('oms-theme', theme); } catch (e) {}
 
   const btn = document.getElementById('theme-toggle-btn');
   if (btn) {
     btn.innerHTML = `<i data-lucide="${theme === 'light' ? 'moon' : 'sun'}" class="w-4 h-4"></i>`;
-    btn.title = theme === 'light' ? '切換為深色莫蘭迪' : '切換為淺色莫蘭迪';
+    const label = theme === 'light' ? '切換為深色莫蘭迪' : '切換為淺色莫蘭迪';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    renderIcons(btn);
   }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', `rgb(${themeRGB('slate-950')})`);
 
-  // 雷達圖的顏色是畫進 canvas 的，換主題必須重畫
-  const panel = document.getElementById('tab-content-radar');
-  if (panel && !panel.classList.contains('hidden')) {
-    renderRadarChart();
-  } else if (state.radar.chartInstance) {
-    state.radar.chartInstance.destroy();
-    state.radar.chartInstance = null;
-  }
-
-  if (window.lucide) lucide.createIcons();
+  // 雷達圖的顏色是畫進 canvas 的，換主題要更新
+  if (state.radar.chartInstance && state.activeTab === 'radar') renderRadarChart();
 }
 
 function toggleTheme() {
@@ -2172,6 +2346,7 @@ function toggleTheme() {
 // ----------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
   applyTheme(document.documentElement.classList.contains('dark') ? 'dark' : 'light');
-  setTab('wizard');
-  if (window.lucide) lucide.createIcons();
+  renderIcons();
+  // 網址帶 #bench 之類的錨點時直接打開該分頁
+  setTab(location.hash.replace('#', '') || 'wizard');
 });

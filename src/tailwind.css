@@ -1,0 +1,5 @@
+/* Tailwind 輸入檔：npm run build:css 產生 assets/tailwind.css
+   莫蘭迪色票的 CSS 變數寫在 index.html 的 <style>，與主題切換放在一起 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
