@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install build tools
+        run: npm ci
+
+      # assets/ 與 vendor/ 是 commit 進 repo 的建置產物（GitHub Pages 不跑 npm），
+      # 重新建置後必須與 repo 內的版本一致，否則代表有人改了 app.js／index.html 卻沒重建
+      - name: Rebuild CSS and vendor files
+        run: npm run vendor && npm run build:css
+
+      - name: Check build artifacts are up to date
+        run: git diff --exit-code -- assets vendor
+
+      - name: Validate data.js
+        run: node scripts/validate_data.mjs
+
+      - name: Syntax check
+        run: node --check app.js && node --check data.js

@@ -8,11 +8,16 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+
+# 同時只跑一個同步，避免兩次推送互撞
+concurrency:
+  group: weekly-sync
+  cancel-in-progress: false
 
 jobs:
   sync-leaderboard:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Repository
@@ -23,18 +28,23 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyarrow requests
+          pip install 'pyarrow>=17,<27'
 
       - name: Run Leaderboard Sync Script
         run: |
           python scripts/sync_leaderboard.py
 
-      - name: Verify data.js Syntax
+      - name: Validate data.js
         run: |
-          node -c data.js
+          node scripts/validate_data.mjs
 
       - name: Commit and Push Changes
         run: |
@@ -45,5 +55,7 @@ jobs:
             echo "No changes detected. data.js is already up-to-date."
           else
             git commit -m "chore(data): weekly sync Arena Coding Leaderboard Elo ratings [skip ci]"
+            # 同步期間 main 可能有新 commit，先 rebase 再推
+            git pull --rebase origin main
             git push origin main
           fi
