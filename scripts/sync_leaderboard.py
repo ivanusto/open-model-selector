@@ -6,8 +6,11 @@ OpenModel Selector - Weekly Leaderboard Sync Script
   - arenaWebdevElo ← WebDev 榜（arena.ai/leaderboard/code/webdev）
   - DATA_ASOF.arena ← 兩榜的發布日期
 
-對照方式是 data.js 每個模型的 arenaKey／arenaWebdevKey（完全比對 model_name），不做模糊比對。
+對照方式是 data.js 每個模型的 arenaKey／arenaWebdevKey 與榜上 model_name 完全比對；
+對不到時再以正規化名稱（小寫、括號與空白改成連字號）比對一次，只接受唯一結果，不做模糊比對。
+2026-10-28 起資料集把 model_name 從代號（kimi-k2.6）改成顯示名稱（Kimi K2.6），正規化可同時接受兩種寫法。
 抓取失敗或一筆都沒對到時以 exit 1 結束，讓 GitHub Actions 顯示失敗，不會靜默成功。
+有 key 卻不在榜上（例如榜上改名）時輸出 ::warning::，舊分數保留但會在 Actions 摘要上看得到。
 """
 
 import io
@@ -16,6 +19,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -47,6 +51,12 @@ def fetch_bytes(url, retries=4, timeout=60):
             req = urllib.request.Request(url, headers={"User-Agent": "OpenModelSelector-Sync/2.1"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
+        except urllib.error.HTTPError as e:
+            # 4xx 重試也不會好，直接交給呼叫端換路徑
+            if 400 <= e.code < 500:
+                raise RuntimeError(f"讀取失敗：{url}（HTTP {e.code}）") from e
+            last = e
+            time.sleep(3 * (attempt + 1))
         except Exception as e:
             last = e
             time.sleep(3 * (attempt + 1))
@@ -86,11 +96,18 @@ def fetch_board_parquet(config, category):
             rows.get("rating", []),
             rows.get("leaderboard_publish_date", []),
         ):
-            ratings[name] = rating
+            if name and rating is not None:
+                ratings[name] = rating
             if pub_date:
-                dates.add(pub_date)
+                dates.add(str(pub_date))
+    return finish_board(config, category, ratings, dates)
+
+
+def finish_board(config, category, ratings, dates):
     if not ratings:
         raise RuntimeError(f"{config}/{category} 沒有任何資料")
+    if not dates:
+        raise RuntimeError(f"{config}/{category} 沒有發布日期")
     return ratings, max(dates)
 
 
@@ -110,14 +127,28 @@ def fetch_board(config, category):
         rows = data.get("rows", [])
         for r in rows:
             row = r["row"]
-            ratings[row["model_name"]] = row["rating"]
-            dates.add(row.get("leaderboard_publish_date"))
+            if row.get("model_name") and row.get("rating") is not None:
+                ratings[row["model_name"]] = row["rating"]
+            if row.get("leaderboard_publish_date"):
+                dates.add(str(row["leaderboard_publish_date"]))
         offset += len(rows)
         if not rows or offset >= data.get("num_rows_total", 0):
             break
-    if not ratings:
-        raise RuntimeError(f"{config}/{category} 沒有任何資料")
-    return ratings, max(d for d in dates if d)
+    return finish_board(config, category, ratings, dates)
+
+
+def norm_name(name):
+    """Kimi K3 (Max) 與 kimi-k3-max 視為同一個名稱"""
+    s = name.lower().replace("(", " ").replace(")", " ").replace(",", " ")
+    return re.sub(r"[\s_]+", "-", s.strip()).strip("-")
+
+
+def resolve_key(key, ratings):
+    """完全比對優先；否則正規化後唯一相符才算對到"""
+    if key in ratings:
+        return key
+    hits = [n for n in ratings if norm_name(n) == norm_name(key)]
+    return hits[0] if len(hits) == 1 else None
 
 
 def model_blocks(content):
@@ -147,7 +178,7 @@ def main():
     with open(DATA_JS_PATH, "r", encoding="utf-8") as f:
         content = f.read()
 
-    matched, changed = 0, 0
+    matched, changed, missing = 0, 0, []
     # 由後往前替換，前面區塊的位移不受影響
     for model_id, b_start, b_end in reversed(model_blocks(content)):
         block = content[b_start:b_end]
@@ -157,19 +188,29 @@ def main():
             if not km:
                 continue
             key = km.group(1)
-            if key not in boards[field]:
-                print(f"警告：{model_id} 的 {key_field}='{key}' 不在榜上")
+            name = resolve_key(key, boards[field])
+            if name is None:
+                missing.append(f"{model_id} 的 {key_field}='{key}'")
                 continue
+            if name != key:
+                print(f"提示：{model_id} 的 {key_field}='{key}' 以正規化對到榜上的 '{name}'")
             matched += 1
-            val = round(boards[field][key], 1)
+            val = round(boards[field][name], 1)
             new_block = re.sub(rf"({field}: )(null|[\d.]+)", rf"\g<1>{val}", new_block, count=1)
         if new_block != block:
             changed += 1
             content = content[:b_start] + new_block + content[b_end:]
             print(f"更新 {model_id}")
 
+    for item in missing:
+        # GitHub Actions 會把這行顯示成黃色警告；分數保留上一次的值
+        print(f"::warning::{item} 不在榜上，保留舊分數")
+
     asof = f"text-coding {dates['arenaCodeElo']} / webdev {dates['arenaWebdevElo']}"
-    content, n = re.subn(r"(const DATA_ASOF = \{\s*arena: )'[^']*'", rf"\g<1>'{asof}'", content, count=1)
+    head = content.index("const DATA_ASOF = {")
+    tail = content.index("};", head)
+    asof_block, n = re.subn(r"(\barena: )'[^']*'", rf"\g<1>'{asof}'", content[head:tail], count=1)
+    content = content[:head] + asof_block + content[tail:]
     if n != 1:
         print("錯誤：data.js 找不到 DATA_ASOF.arena")
         sys.exit(1)
